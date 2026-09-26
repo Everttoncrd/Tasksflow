@@ -1,17 +1,29 @@
 import os
 import re
 import secrets
-import sqlite3
 
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+
+import psycopg
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import (
+    check_password_hash,
+    generate_password_hash,
+)
+
+
+# =========================================================
+# VARIÁVEIS DE AMBIENTE
+# =========================================================
+
+load_dotenv()
+
 
 from database import (
     claim_legacy_data_for_first_user,
@@ -25,16 +37,20 @@ from database import (
 # CONFIGURAÇÃO
 # =========================================================
 
-load_dotenv()
-
 app = Flask(__name__)
 
+
 IS_PRODUCTION = (
-    os.getenv("FLASK_ENV", "development").lower()
+    os.getenv(
+        "FLASK_ENV",
+        "development",
+    ).lower()
     == "production"
 )
 
+
 SECRET_KEY = os.getenv("SECRET_KEY")
+
 
 if not SECRET_KEY:
     if IS_PRODUCTION:
@@ -42,7 +58,9 @@ if not SECRET_KEY:
             "SECRET_KEY não configurada."
         )
 
-    SECRET_KEY = "taskflow-dev-only-change-me"
+    SECRET_KEY = (
+        "taskflow-dev-only-change-me"
+    )
 
 
 FRONTEND_ORIGIN = os.getenv(
@@ -53,21 +71,42 @@ FRONTEND_ORIGIN = os.getenv(
 
 app.config.update(
     SECRET_KEY=SECRET_KEY,
+
     SESSION_COOKIE_HTTPONLY=True,
+
     SESSION_COOKIE_SECURE=IS_PRODUCTION,
-    SESSION_COOKIE_SAMESITE="Lax",
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+
+    # Local:
+    # frontend e backend usam localhost.
+    #
+    # Produção:
+    # frontend e API poderão estar em domínios
+    # diferentes, exigindo SameSite=None.
+    SESSION_COOKIE_SAMESITE=(
+        "None"
+        if IS_PRODUCTION
+        else "Lax"
+    ),
+
+    PERMANENT_SESSION_LIFETIME=timedelta(
+        hours=8
+    ),
 )
 
 
 CORS(
     app,
+
     resources={
         r"/*": {
-            "origins": [FRONTEND_ORIGIN]
+            "origins": [
+                FRONTEND_ORIGIN
+            ]
         }
     },
+
     supports_credentials=True,
+
     allow_headers=[
         "Content-Type",
         "X-CSRF-Token",
@@ -83,6 +122,11 @@ limiter = Limiter(
     key_func=get_remote_address,
     app=app,
     default_limits=[],
+
+    # Desenvolvimento.
+    #
+    # Antes do deploy definitivo vamos trocar
+    # por armazenamento compartilhado.
     storage_uri="memory://",
 )
 
@@ -104,18 +148,23 @@ STATUS_VALIDOS = [
     "Concluída",
 ]
 
+
 PRIORIDADES_VALIDAS = [
     "Baixa",
     "Média",
     "Alta",
 ]
 
+
 MAX_LOGIN_ATTEMPTS = 5
+
 LOCK_MINUTES = 15
+
 
 EMAIL_REGEX = re.compile(
     r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 )
+
 
 SAFE_METHODS = {
     "GET",
@@ -136,21 +185,29 @@ def normalize_text(value):
 
 
 def utc_now():
-    return datetime.now(timezone.utc)
-
-
-def iso_utc(value):
-    return value.astimezone(
+    return datetime.now(
         timezone.utc
-    ).isoformat()
+    )
 
 
 def parse_datetime(value):
     if not value:
         return None
 
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(
+                tzinfo=timezone.utc
+            )
+
+        return value.astimezone(
+            timezone.utc
+        )
+
     try:
-        result = datetime.fromisoformat(value)
+        result = datetime.fromisoformat(
+            str(value)
+        )
 
         if result.tzinfo is None:
             result = result.replace(
@@ -161,7 +218,10 @@ def parse_datetime(value):
             timezone.utc
         )
 
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError,
+    ):
         return None
 
 
@@ -175,8 +235,13 @@ def public_user(user):
 
 
 def validate_password(password):
-    if not isinstance(password, str):
-        return "A senha é obrigatória."
+    if not isinstance(
+        password,
+        str,
+    ):
+        return (
+            "A senha é obrigatória."
+        )
 
     if len(password) < 8:
         return (
@@ -190,13 +255,19 @@ def validate_password(password):
             "128 caracteres."
         )
 
-    if not re.search(r"[A-Za-z]", password):
+    if not re.search(
+        r"[A-Za-z]",
+        password,
+    ):
         return (
             "A senha deve possuir "
             "pelo menos uma letra."
         )
 
-    if not re.search(r"\d", password):
+    if not re.search(
+        r"\d",
+        password,
+    ):
         return (
             "A senha deve possuir "
             "pelo menos um número."
@@ -206,7 +277,9 @@ def validate_password(password):
 
 
 def current_user_id():
-    return session.get("user_id")
+    return session.get(
+        "user_id"
+    )
 
 
 # =========================================================
@@ -214,13 +287,18 @@ def current_user_id():
 # =========================================================
 
 def login_required(view):
+
     @wraps(view)
-    def wrapped(*args, **kwargs):
+    def wrapped(
+        *args,
+        **kwargs,
+    ):
         user_id = current_user_id()
 
         if not user_id:
             return jsonify({
-                "error": "Autenticação necessária."
+                "error":
+                    "Autenticação necessária."
             }), 401
 
         conn = get_connection()
@@ -233,11 +311,16 @@ def login_required(view):
                     name,
                     email,
                     created_at
+
                 FROM users
-                WHERE id = ?
+
+                WHERE id = %s
                 """,
-                (user_id,),
+                (
+                    user_id,
+                ),
             ).fetchone()
+
         finally:
             conn.close()
 
@@ -245,10 +328,14 @@ def login_required(view):
             session.clear()
 
             return jsonify({
-                "error": "Sessão inválida."
+                "error":
+                    "Sessão inválida."
             }), 401
 
-        return view(*args, **kwargs)
+        return view(
+            *args,
+            **kwargs,
+        )
 
     return wrapped
 
@@ -258,23 +345,39 @@ def login_required(view):
 # =========================================================
 
 def generate_csrf_token():
-    token = session.get("csrf_token")
+
+    token = session.get(
+        "csrf_token"
+    )
 
     if not token:
-        token = secrets.token_urlsafe(32)
-        session["csrf_token"] = token
+        token = secrets.token_urlsafe(
+            32
+        )
+
+        session[
+            "csrf_token"
+        ] = token
 
     return token
 
 
 def rotate_csrf_token():
-    token = secrets.token_urlsafe(32)
-    session["csrf_token"] = token
+
+    token = secrets.token_urlsafe(
+        32
+    )
+
+    session[
+        "csrf_token"
+    ] = token
+
     return token
 
 
 @app.before_request
 def csrf_protection():
+
     if request.method in SAFE_METHODS:
         return None
 
@@ -286,9 +389,6 @@ def csrf_protection():
     }:
         return None
 
-    # Se não houver usuário autenticado,
-    # login_required continuará responsável
-    # pela resposta 401.
     if not current_user_id():
         return None
 
@@ -296,8 +396,10 @@ def csrf_protection():
         "csrf_token"
     )
 
-    request_token = request.headers.get(
-        "X-CSRF-Token"
+    request_token = (
+        request.headers.get(
+            "X-CSRF-Token"
+        )
     )
 
     if (
@@ -322,6 +424,7 @@ def csrf_protection():
 )
 @login_required
 def csrf_token():
+
     return jsonify({
         "csrf_token":
             generate_csrf_token()
@@ -329,7 +432,7 @@ def csrf_token():
 
 
 # =========================================================
-# TAREFAS / CATEGORIAS
+# FUNÇÕES DE TAREFAS / CATEGORIAS
 # =========================================================
 
 def category_exists(
@@ -337,6 +440,7 @@ def category_exists(
     user_id,
     category_name,
 ):
+
     category_name = normalize_text(
         category_name
     )
@@ -347,9 +451,11 @@ def category_exists(
     category = conn.execute(
         """
         SELECT id
+
         FROM categories
-        WHERE user_id = ?
-          AND name = ? COLLATE NOCASE
+
+        WHERE user_id = %s
+          AND LOWER(name) = LOWER(%s)
         """,
         (
             user_id,
@@ -365,12 +471,24 @@ def get_owned_task(
     task_id,
     user_id,
 ):
+
     return conn.execute(
         """
-        SELECT *
+        SELECT
+            id,
+            user_id,
+            title,
+            description,
+            category,
+            priority,
+            status,
+            due_date::text AS due_date,
+            created_at
+
         FROM tasks
-        WHERE id = ?
-          AND user_id = ?
+
+        WHERE id = %s
+          AND user_id = %s
         """,
         (
             task_id,
@@ -385,6 +503,7 @@ def get_owned_task(
 
 @app.after_request
 def security_headers(response):
+
     response.headers[
         "X-Content-Type-Options"
     ] = "nosniff"
@@ -395,7 +514,9 @@ def security_headers(response):
 
     response.headers[
         "Referrer-Policy"
-    ] = "strict-origin-when-cross-origin"
+    ] = (
+        "strict-origin-when-cross-origin"
+    )
 
     response.headers[
         "Permissions-Policy"
@@ -416,8 +537,12 @@ def security_headers(response):
 # HOME
 # =========================================================
 
-@app.route("/", methods=["GET"])
+@app.route(
+    "/",
+    methods=["GET"],
+)
 def home():
+
     return jsonify({
         "message":
             "TaskFlow API funcionando!"
@@ -432,8 +557,11 @@ def home():
     "/auth/register",
     methods=["POST"],
 )
-@limiter.limit("5 per minute")
+@limiter.limit(
+    "5 per minute"
+)
 def register():
+
     data = request.get_json(
         silent=True
     ) or {}
@@ -451,7 +579,10 @@ def register():
         "",
     )
 
-    if len(name) < 2 or len(name) > 80:
+    if (
+        len(name) < 2
+        or len(name) > 80
+    ):
         return jsonify({
             "error":
                 "Informe um nome entre "
@@ -467,13 +598,16 @@ def register():
                 "Informe um e-mail válido."
         }), 400
 
-    password_error = validate_password(
-        password
+    password_error = (
+        validate_password(
+            password
+        )
     )
 
     if password_error:
         return jsonify({
-            "error": password_error
+            "error":
+                password_error
         }), 400
 
     conn = get_connection()
@@ -482,11 +616,15 @@ def register():
         existing = conn.execute(
             """
             SELECT id
+
             FROM users
-            WHERE email = ?
-                COLLATE NOCASE
+
+            WHERE LOWER(email)
+                = LOWER(%s)
             """,
-            (email,),
+            (
+                email,
+            ),
         ).fetchone()
 
         if existing:
@@ -503,23 +641,34 @@ def register():
             )
         )
 
-        cursor = conn.execute(
+        user = conn.execute(
             """
             INSERT INTO users (
                 name,
                 email,
                 password_hash
             )
-            VALUES (?, ?, ?)
+
+            VALUES (
+                %s,
+                %s,
+                %s
+            )
+
+            RETURNING
+                id,
+                name,
+                email,
+                created_at
             """,
             (
                 name,
                 email,
                 password_hash,
             ),
-        )
+        ).fetchone()
 
-        user_id = cursor.lastrowid
+        user_id = user["id"]
 
         claim_legacy_data_for_first_user(
             conn,
@@ -533,22 +682,12 @@ def register():
 
         conn.commit()
 
-        user = conn.execute(
-            """
-            SELECT
-                id,
-                name,
-                email,
-                created_at
-            FROM users
-            WHERE id = ?
-            """,
-            (user_id,),
-        ).fetchone()
-
         session.clear()
         session.permanent = True
-        session["user_id"] = user_id
+
+        session[
+            "user_id"
+        ] = user_id
 
         rotate_csrf_token()
 
@@ -560,7 +699,7 @@ def register():
                 public_user(user),
         }), 201
 
-    except sqlite3.IntegrityError:
+    except psycopg.IntegrityError:
         conn.rollback()
 
         return jsonify({
@@ -581,8 +720,11 @@ def register():
     "/auth/login",
     methods=["POST"],
 )
-@limiter.limit("10 per minute")
+@limiter.limit(
+    "10 per minute"
+)
 def login():
+
     data = request.get_json(
         silent=True
     ) or {}
@@ -618,11 +760,15 @@ def login():
         user = conn.execute(
             """
             SELECT *
+
             FROM users
-            WHERE email = ?
-                COLLATE NOCASE
+
+            WHERE LOWER(email)
+                = LOWER(%s)
             """,
-            (email,),
+            (
+                email,
+            ),
         ).fetchone()
 
         if user is None:
@@ -636,7 +782,8 @@ def login():
 
         if (
             locked_until
-            and locked_until > utc_now()
+            and locked_until
+            > utc_now()
         ):
             seconds = int(
                 (
@@ -652,23 +799,32 @@ def login():
                     "novamente mais tarde.",
 
                 "retry_after_seconds":
-                    max(seconds, 1),
+                    max(
+                        seconds,
+                        1,
+                    ),
             }), 429
 
         if not check_password_hash(
             user["password_hash"],
             password,
         ):
+
             attempts = (
                 int(
                     user[
                         "failed_login_attempts"
-                    ] or 0
+                    ]
+                    or 0
                 )
                 + 1
             )
 
-            if attempts >= MAX_LOGIN_ATTEMPTS:
+            if (
+                attempts
+                >= MAX_LOGIN_ATTEMPTS
+            ):
+
                 lock_until = (
                     utc_now()
                     + timedelta(
@@ -679,15 +835,17 @@ def login():
                 conn.execute(
                     """
                     UPDATE users
+
                     SET
                         failed_login_attempts = 0,
-                        locked_until = ?,
+                        locked_until = %s,
                         updated_at =
                             CURRENT_TIMESTAMP
-                    WHERE id = ?
+
+                    WHERE id = %s
                     """,
                     (
-                        iso_utc(lock_until),
+                        lock_until,
                         user["id"],
                     ),
                 )
@@ -708,12 +866,14 @@ def login():
             conn.execute(
                 """
                 UPDATE users
+
                 SET
-                    failed_login_attempts = ?,
+                    failed_login_attempts = %s,
                     locked_until = NULL,
                     updated_at =
                         CURRENT_TIMESTAMP
-                WHERE id = ?
+
+                WHERE id = %s
                 """,
                 (
                     attempts,
@@ -730,21 +890,28 @@ def login():
         conn.execute(
             """
             UPDATE users
+
             SET
                 failed_login_attempts = 0,
                 locked_until = NULL,
                 updated_at =
                     CURRENT_TIMESTAMP
-            WHERE id = ?
+
+            WHERE id = %s
             """,
-            (user["id"],),
+            (
+                user["id"],
+            ),
         )
 
         conn.commit()
 
         session.clear()
         session.permanent = True
-        session["user_id"] = user["id"]
+
+        session[
+            "user_id"
+        ] = user["id"]
 
         rotate_csrf_token()
 
@@ -770,6 +937,7 @@ def login():
 )
 @login_required
 def me():
+
     conn = get_connection()
 
     try:
@@ -780,8 +948,10 @@ def me():
                 name,
                 email,
                 created_at
+
             FROM users
-            WHERE id = ?
+
+            WHERE id = %s
             """,
             (
                 current_user_id(),
@@ -807,6 +977,7 @@ def me():
 )
 @login_required
 def logout():
+
     session.clear()
 
     return jsonify({
@@ -824,8 +995,11 @@ def logout():
     methods=["PUT"],
 )
 @login_required
-@limiter.limit("5 per minute")
+@limiter.limit(
+    "5 per minute"
+)
 def change_password():
+
     data = request.get_json(
         silent=True
     ) or {}
@@ -840,16 +1014,22 @@ def change_password():
         "",
     )
 
-    password_error = validate_password(
-        new_password
+    password_error = (
+        validate_password(
+            new_password
+        )
     )
 
     if password_error:
         return jsonify({
-            "error": password_error
+            "error":
+                password_error
         }), 400
 
-    if current_password == new_password:
+    if (
+        current_password
+        == new_password
+    ):
         return jsonify({
             "error":
                 "A nova senha deve ser "
@@ -864,8 +1044,10 @@ def change_password():
             SELECT
                 id,
                 password_hash
+
             FROM users
-            WHERE id = ?
+
+            WHERE id = %s
             """,
             (
                 current_user_id(),
@@ -894,11 +1076,13 @@ def change_password():
         conn.execute(
             """
             UPDATE users
+
             SET
-                password_hash = ?,
+                password_hash = %s,
                 updated_at =
                     CURRENT_TIMESTAMP
-            WHERE id = ?
+
+            WHERE id = %s
             """,
             (
                 password_hash,
@@ -908,8 +1092,6 @@ def change_password():
 
         conn.commit()
 
-        # Renova o token depois de uma
-        # operação sensível.
         rotate_csrf_token()
 
         return jsonify({
@@ -931,7 +1113,9 @@ def change_password():
 )
 @login_required
 def get_tasks():
+
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
@@ -944,19 +1128,23 @@ def get_tasks():
                 category,
                 priority,
                 status,
-                due_date,
+                due_date::text AS due_date,
                 created_at
+
             FROM tasks
-            WHERE user_id = ?
+
+            WHERE user_id = %s
+
             ORDER BY id DESC
             """,
-            (user_id,),
+            (
+                user_id,
+            ),
         ).fetchall()
 
-        return jsonify([
-            dict(task)
-            for task in tasks
-        ])
+        return jsonify(
+            tasks
+        )
 
     finally:
         conn.close()
@@ -972,6 +1160,7 @@ def get_tasks():
 )
 @login_required
 def create_task():
+
     data = request.get_json(
         silent=True
     ) or {}
@@ -1000,7 +1189,7 @@ def create_task():
 
     due_date = data.get(
         "due_date"
-    )
+    ) or None
 
     if not title:
         return jsonify({
@@ -1024,12 +1213,17 @@ def create_task():
 
     if status not in STATUS_VALIDOS:
         return jsonify({
-            "error": "Status inválido."
+            "error":
+                "Status inválido."
         }), 400
 
-    if priority not in PRIORIDADES_VALIDAS:
+    if (
+        priority
+        not in PRIORIDADES_VALIDAS
+    ):
         return jsonify({
-            "error": "Prioridade inválida."
+            "error":
+                "Prioridade inválida."
         }), 400
 
     if not category:
@@ -1039,6 +1233,7 @@ def create_task():
         }), 400
 
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
@@ -1052,7 +1247,7 @@ def create_task():
                     "Categoria não encontrada."
             }), 400
 
-        cursor = conn.execute(
+        row = conn.execute(
             """
             INSERT INTO tasks (
                 user_id,
@@ -1063,7 +1258,18 @@ def create_task():
                 status,
                 due_date
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
+            )
+
+            RETURNING id
             """,
             (
                 user_id,
@@ -1074,18 +1280,18 @@ def create_task():
                 status,
                 due_date,
             ),
-        )
+        ).fetchone()
 
         conn.commit()
 
         task = get_owned_task(
             conn,
-            cursor.lastrowid,
+            row["id"],
             user_id,
         )
 
         return jsonify(
-            dict(task)
+            task
         ), 201
 
     finally:
@@ -1102,11 +1308,13 @@ def create_task():
 )
 @login_required
 def update_task(id):
+
     data = request.get_json(
         silent=True
     ) or {}
 
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
@@ -1132,7 +1340,8 @@ def update_task(id):
         description = normalize_text(
             data.get(
                 "description",
-                task["description"] or "",
+                task["description"]
+                or "",
             )
         )
 
@@ -1156,7 +1365,7 @@ def update_task(id):
         due_date = data.get(
             "due_date",
             task["due_date"],
-        )
+        ) or None
 
         if not title:
             return jsonify({
@@ -1180,10 +1389,14 @@ def update_task(id):
 
         if status not in STATUS_VALIDOS:
             return jsonify({
-                "error": "Status inválido."
+                "error":
+                    "Status inválido."
             }), 400
 
-        if priority not in PRIORIDADES_VALIDAS:
+        if (
+            priority
+            not in PRIORIDADES_VALIDAS
+        ):
             return jsonify({
                 "error":
                     "Prioridade inválida."
@@ -1202,15 +1415,17 @@ def update_task(id):
         conn.execute(
             """
             UPDATE tasks
+
             SET
-                title = ?,
-                description = ?,
-                category = ?,
-                priority = ?,
-                status = ?,
-                due_date = ?
-            WHERE id = ?
-              AND user_id = ?
+                title = %s,
+                description = %s,
+                category = %s,
+                priority = %s,
+                status = %s,
+                due_date = %s
+
+            WHERE id = %s
+              AND user_id = %s
             """,
             (
                 title,
@@ -1226,14 +1441,16 @@ def update_task(id):
 
         conn.commit()
 
-        updated_task = get_owned_task(
-            conn,
-            id,
-            user_id,
+        updated_task = (
+            get_owned_task(
+                conn,
+                id,
+                user_id,
+            )
         )
 
         return jsonify(
-            dict(updated_task)
+            updated_task
         )
 
     finally:
@@ -1250,6 +1467,7 @@ def update_task(id):
 )
 @login_required
 def update_task_status(id):
+
     data = request.get_json(
         silent=True
     ) or {}
@@ -1258,13 +1476,17 @@ def update_task_status(id):
         "status"
     )
 
-    if new_status not in STATUS_VALIDOS:
+    if (
+        new_status
+        not in STATUS_VALIDOS
+    ):
         return jsonify({
             "error":
                 "Status inválido."
         }), 400
 
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
@@ -1283,9 +1505,11 @@ def update_task_status(id):
         conn.execute(
             """
             UPDATE tasks
-            SET status = ?
-            WHERE id = ?
-              AND user_id = ?
+
+            SET status = %s
+
+            WHERE id = %s
+              AND user_id = %s
             """,
             (
                 new_status,
@@ -1296,14 +1520,16 @@ def update_task_status(id):
 
         conn.commit()
 
-        updated_task = get_owned_task(
-            conn,
-            id,
-            user_id,
+        updated_task = (
+            get_owned_task(
+                conn,
+                id,
+                user_id,
+            )
         )
 
         return jsonify(
-            dict(updated_task)
+            updated_task
         )
 
     finally:
@@ -1320,7 +1546,9 @@ def update_task_status(id):
 )
 @login_required
 def delete_task(id):
+
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
@@ -1339,8 +1567,9 @@ def delete_task(id):
         conn.execute(
             """
             DELETE FROM tasks
-            WHERE id = ?
-              AND user_id = ?
+
+            WHERE id = %s
+              AND user_id = %s
             """,
             (
                 id,
@@ -1369,7 +1598,9 @@ def delete_task(id):
 )
 @login_required
 def get_categories():
+
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
@@ -1380,26 +1611,32 @@ def get_categories():
                 c.name,
                 c.created_at,
                 COUNT(t.id) AS task_count
+
             FROM categories c
+
             LEFT JOIN tasks t
                 ON t.user_id = c.user_id
-               AND t.category =
-                    c.name COLLATE NOCASE
-            WHERE c.user_id = ?
+               AND LOWER(t.category)
+                    = LOWER(c.name)
+
+            WHERE c.user_id = %s
+
             GROUP BY
                 c.id,
                 c.name,
                 c.created_at
+
             ORDER BY
-                c.name COLLATE NOCASE ASC
+                LOWER(c.name) ASC
             """,
-            (user_id,),
+            (
+                user_id,
+            ),
         ).fetchall()
 
-        return jsonify([
-            dict(category)
-            for category in categories
-        ])
+        return jsonify(
+            categories
+        )
 
     finally:
         conn.close()
@@ -1415,6 +1652,7 @@ def get_categories():
 )
 @login_required
 def create_category():
+
     data = request.get_json(
         silent=True
     ) or {}
@@ -1438,15 +1676,19 @@ def create_category():
         }), 400
 
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
         existing = conn.execute(
             """
             SELECT id
+
             FROM categories
-            WHERE user_id = ?
-              AND name = ? COLLATE NOCASE
+
+            WHERE user_id = %s
+              AND LOWER(name)
+                    = LOWER(%s)
             """,
             (
                 user_id,
@@ -1460,44 +1702,44 @@ def create_category():
                     "Essa categoria já existe."
             }), 409
 
-        cursor = conn.execute(
+        category = conn.execute(
             """
             INSERT INTO categories (
                 user_id,
                 name
             )
-            VALUES (?, ?)
-            """,
-            (
-                user_id,
-                name,
-            ),
-        )
 
-        conn.commit()
+            VALUES (
+                %s,
+                %s
+            )
 
-        category = conn.execute(
-            """
-            SELECT
+            RETURNING
                 id,
                 name,
                 created_at
-            FROM categories
-            WHERE id = ?
-              AND user_id = ?
             """,
             (
-                cursor.lastrowid,
                 user_id,
+                name,
             ),
         ).fetchone()
 
-        result = dict(category)
-        result["task_count"] = 0
+        conn.commit()
 
-        return jsonify(result), 201
+        result = dict(
+            category
+        )
 
-    except sqlite3.IntegrityError:
+        result[
+            "task_count"
+        ] = 0
+
+        return jsonify(
+            result
+        ), 201
+
+    except psycopg.IntegrityError:
         conn.rollback()
 
         return jsonify({
@@ -1519,6 +1761,7 @@ def create_category():
 )
 @login_required
 def update_category(id):
+
     data = request.get_json(
         silent=True
     ) or {}
@@ -1542,15 +1785,18 @@ def update_category(id):
         }), 400
 
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
         category = conn.execute(
             """
             SELECT *
+
             FROM categories
-            WHERE id = ?
-              AND user_id = ?
+
+            WHERE id = %s
+              AND user_id = %s
             """,
             (
                 id,
@@ -1567,10 +1813,13 @@ def update_category(id):
         duplicate = conn.execute(
             """
             SELECT id
+
             FROM categories
-            WHERE user_id = ?
-              AND name = ? COLLATE NOCASE
-              AND id != ?
+
+            WHERE user_id = %s
+              AND LOWER(name)
+                    = LOWER(%s)
+              AND id != %s
             """,
             (
                 user_id,
@@ -1585,14 +1834,18 @@ def update_category(id):
                     "Essa categoria já existe."
             }), 409
 
-        old_name = category["name"]
+        old_name = (
+            category["name"]
+        )
 
         conn.execute(
             """
             UPDATE categories
-            SET name = ?
-            WHERE id = ?
-              AND user_id = ?
+
+            SET name = %s
+
+            WHERE id = %s
+              AND user_id = %s
             """,
             (
                 new_name,
@@ -1604,10 +1857,12 @@ def update_category(id):
         conn.execute(
             """
             UPDATE tasks
-            SET category = ?
-            WHERE user_id = ?
-              AND category = ?
-                    COLLATE NOCASE
+
+            SET category = %s
+
+            WHERE user_id = %s
+              AND LOWER(category)
+                    = LOWER(%s)
             """,
             (
                 new_name,
@@ -1618,36 +1873,44 @@ def update_category(id):
 
         conn.commit()
 
-        updated_category = conn.execute(
-            """
-            SELECT
-                c.id,
-                c.name,
-                c.created_at,
-                COUNT(t.id) AS task_count
-            FROM categories c
-            LEFT JOIN tasks t
-                ON t.user_id = c.user_id
-               AND t.category =
-                    c.name COLLATE NOCASE
-            WHERE c.id = ?
-              AND c.user_id = ?
-            GROUP BY
-                c.id,
-                c.name,
-                c.created_at
-            """,
-            (
-                id,
-                user_id,
-            ),
-        ).fetchone()
+        updated_category = (
+            conn.execute(
+                """
+                SELECT
+                    c.id,
+                    c.name,
+                    c.created_at,
+                    COUNT(t.id)
+                        AS task_count
 
-        return jsonify(
-            dict(updated_category)
+                FROM categories c
+
+                LEFT JOIN tasks t
+                    ON t.user_id
+                        = c.user_id
+                   AND LOWER(t.category)
+                        = LOWER(c.name)
+
+                WHERE c.id = %s
+                  AND c.user_id = %s
+
+                GROUP BY
+                    c.id,
+                    c.name,
+                    c.created_at
+                """,
+                (
+                    id,
+                    user_id,
+                ),
+            ).fetchone()
         )
 
-    except sqlite3.IntegrityError:
+        return jsonify(
+            updated_category
+        )
+
+    except psycopg.IntegrityError:
         conn.rollback()
 
         return jsonify({
@@ -1669,16 +1932,20 @@ def update_category(id):
 )
 @login_required
 def delete_category(id):
+
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
         category = conn.execute(
             """
             SELECT *
+
             FROM categories
-            WHERE id = ?
-              AND user_id = ?
+
+            WHERE id = %s
+              AND user_id = %s
             """,
             (
                 id,
@@ -1692,19 +1959,28 @@ def delete_category(id):
                     "Categoria não encontrada."
             }), 404
 
-        task_count = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM tasks
-            WHERE user_id = ?
-              AND category = ?
-                    COLLATE NOCASE
-            """,
-            (
-                user_id,
-                category["name"],
-            ),
-        ).fetchone()[0]
+        task_count_row = (
+            conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total
+
+                FROM tasks
+
+                WHERE user_id = %s
+                  AND LOWER(category)
+                        = LOWER(%s)
+                """,
+                (
+                    user_id,
+                    category["name"],
+                ),
+            ).fetchone()
+        )
+
+        task_count = (
+            task_count_row["total"]
+        )
 
         if task_count > 0:
             return jsonify({
@@ -1721,8 +1997,9 @@ def delete_category(id):
         conn.execute(
             """
             DELETE FROM categories
-            WHERE id = ?
-              AND user_id = ?
+
+            WHERE id = %s
+              AND user_id = %s
             """,
             (
                 id,
@@ -1752,7 +2029,9 @@ def delete_category(id):
 )
 @login_required
 def dashboard():
+
     user_id = current_user_id()
+
     conn = get_connection()
 
     try:
@@ -1761,57 +2040,76 @@ def dashboard():
             SELECT
                 COUNT(*) AS total,
 
-                SUM(
-                    CASE
-                        WHEN status = 'Pendente'
-                        THEN 1
-                        ELSE 0
-                    END
+                COUNT(*) FILTER (
+                    WHERE status = 'Pendente'
                 ) AS pending,
 
-                SUM(
-                    CASE
-                        WHEN status = 'Em andamento'
-                        THEN 1
-                        ELSE 0
-                    END
+                COUNT(*) FILTER (
+                    WHERE status = 'Em andamento'
                 ) AS progress,
 
-                SUM(
-                    CASE
-                        WHEN status = 'Concluída'
-                        THEN 1
-                        ELSE 0
-                    END
+                COUNT(*) FILTER (
+                    WHERE status = 'Concluída'
                 ) AS completed
 
             FROM tasks
-            WHERE user_id = ?
+
+            WHERE user_id = %s
             """,
-            (user_id,),
+            (
+                user_id,
+            ),
         ).fetchone()
 
     finally:
         conn.close()
 
-    total = result["total"] or 0
-    pending = result["pending"] or 0
-    progress = result["progress"] or 0
-    completed = result["completed"] or 0
+    total = (
+        result["total"]
+        or 0
+    )
+
+    pending = (
+        result["pending"]
+        or 0
+    )
+
+    progress = (
+        result["progress"]
+        or 0
+    )
+
+    completed = (
+        result["completed"]
+        or 0
+    )
 
     percentage = 0
 
     if total > 0:
         percentage = round(
-            (completed / total) * 100
+            (
+                completed
+                / total
+            )
+            * 100
         )
 
     return jsonify({
-        "total": total,
-        "pending": pending,
-        "progress": progress,
-        "completed": completed,
-        "percentage": percentage,
+        "total":
+            total,
+
+        "pending":
+            pending,
+
+        "progress":
+            progress,
+
+        "completed":
+            completed,
+
+        "percentage":
+            percentage,
     })
 
 
@@ -1821,6 +2119,7 @@ def dashboard():
 
 @app.errorhandler(404)
 def not_found(error):
+
     return jsonify({
         "error":
             "Rota não encontrada."
@@ -1829,6 +2128,7 @@ def not_found(error):
 
 @app.errorhandler(405)
 def method_not_allowed(error):
+
     return jsonify({
         "error":
             "Método não permitido."
@@ -1837,15 +2137,18 @@ def method_not_allowed(error):
 
 @app.errorhandler(429)
 def rate_limit_exceeded(error):
+
     return jsonify({
         "error":
             "Muitas requisições. "
-            "Aguarde um momento e tente novamente."
+            "Aguarde um momento "
+            "e tente novamente."
     }), 429
 
 
 @app.errorhandler(500)
 def internal_error(error):
+
     return jsonify({
         "error":
             "Erro interno do servidor."
@@ -1857,6 +2160,7 @@ def internal_error(error):
 # =========================================================
 
 if __name__ == "__main__":
+
     app.run(
         host="127.0.0.1",
         port=5000,
