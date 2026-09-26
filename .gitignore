@@ -1,0 +1,56 @@
+# ============================================
+# TASKFLOW - GITIGNORE
+# ============================================
+
+# SEGREDOS
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# BANCO DE DADOS
+*.db
+*.sqlite
+*.sqlite3
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+
+# PYTHON
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.venv/
+venv/
+env/
+
+# NODE / REACT
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+
+# LOGS
+*.log
+
+# EDITORES
+.vscode/
+.idea/
+
+# SISTEMA
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# TEMPORÁRIOS
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
