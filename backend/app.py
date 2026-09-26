@@ -1,32 +1,132 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+import os
+import re
+import secrets
 import sqlite3
 
-from database import get_connection, create_database
+from datetime import datetime, timedelta, timezone
+from functools import wraps
 
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request, session
+from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from werkzeug.security import check_password_hash, generate_password_hash
+
+from database import (
+    claim_legacy_data_for_first_user,
+    create_database,
+    get_connection,
+    seed_default_categories,
+)
+
+
+# =========================================================
+# CONFIGURAÇÃO
+# =========================================================
+
+load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+
+IS_PRODUCTION = (
+    os.getenv("FLASK_ENV", "development").lower()
+    == "production"
+)
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+
+if not SECRET_KEY:
+    if IS_PRODUCTION:
+        raise RuntimeError(
+            "SECRET_KEY não configurada."
+        )
+
+    SECRET_KEY = "taskflow-dev-only-change-me"
+
+
+FRONTEND_ORIGIN = os.getenv(
+    "FRONTEND_ORIGIN",
+    "http://localhost:5173",
+)
+
+
+app.config.update(
+    SECRET_KEY=SECRET_KEY,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SECURE=IS_PRODUCTION,
+    SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+)
+
+
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": [FRONTEND_ORIGIN]
+        }
+    },
+    supports_credentials=True,
+    allow_headers=[
+        "Content-Type",
+        "X-CSRF-Token",
+    ],
+)
+
+
+# =========================================================
+# RATE LIMITING
+# =========================================================
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=[],
+    storage_uri="memory://",
+)
+
+
+# =========================================================
+# BANCO
+# =========================================================
 
 create_database()
 
 
 # =========================================================
-# FUNÇÕES AUXILIARES
+# CONSTANTES
 # =========================================================
 
 STATUS_VALIDOS = [
     "Pendente",
     "Em andamento",
-    "Concluída"
+    "Concluída",
 ]
 
 PRIORIDADES_VALIDAS = [
     "Baixa",
     "Média",
-    "Alta"
+    "Alta",
 ]
 
+MAX_LOGIN_ATTEMPTS = 5
+LOCK_MINUTES = 15
+
+EMAIL_REGEX = re.compile(
+    r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+)
+
+SAFE_METHODS = {
+    "GET",
+    "HEAD",
+    "OPTIONS",
+}
+
+
+# =========================================================
+# FUNÇÕES AUXILIARES
+# =========================================================
 
 def normalize_text(value):
     if not isinstance(value, str):
@@ -35,70 +135,853 @@ def normalize_text(value):
     return value.strip()
 
 
-def category_exists(conn, category_name):
-    category_name = normalize_text(category_name)
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def iso_utc(value):
+    return value.astimezone(
+        timezone.utc
+    ).isoformat()
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+
+    try:
+        result = datetime.fromisoformat(value)
+
+        if result.tzinfo is None:
+            result = result.replace(
+                tzinfo=timezone.utc
+            )
+
+        return result.astimezone(
+            timezone.utc
+        )
+
+    except (TypeError, ValueError):
+        return None
+
+
+def public_user(user):
+    return {
+        "id": user["id"],
+        "name": user["name"],
+        "email": user["email"],
+        "created_at": user["created_at"],
+    }
+
+
+def validate_password(password):
+    if not isinstance(password, str):
+        return "A senha é obrigatória."
+
+    if len(password) < 8:
+        return (
+            "A senha deve ter pelo menos "
+            "8 caracteres."
+        )
+
+    if len(password) > 128:
+        return (
+            "A senha deve ter no máximo "
+            "128 caracteres."
+        )
+
+    if not re.search(r"[A-Za-z]", password):
+        return (
+            "A senha deve possuir "
+            "pelo menos uma letra."
+        )
+
+    if not re.search(r"\d", password):
+        return (
+            "A senha deve possuir "
+            "pelo menos um número."
+        )
+
+    return None
+
+
+def current_user_id():
+    return session.get("user_id")
+
+
+# =========================================================
+# AUTENTICAÇÃO DAS ROTAS
+# =========================================================
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        user_id = current_user_id()
+
+        if not user_id:
+            return jsonify({
+                "error": "Autenticação necessária."
+            }), 401
+
+        conn = get_connection()
+
+        try:
+            user = conn.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    email,
+                    created_at
+                FROM users
+                WHERE id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if user is None:
+            session.clear()
+
+            return jsonify({
+                "error": "Sessão inválida."
+            }), 401
+
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+# =========================================================
+# CSRF
+# =========================================================
+
+def generate_csrf_token():
+    token = session.get("csrf_token")
+
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+
+    return token
+
+
+def rotate_csrf_token():
+    token = secrets.token_urlsafe(32)
+    session["csrf_token"] = token
+    return token
+
+
+@app.before_request
+def csrf_protection():
+    if request.method in SAFE_METHODS:
+        return None
+
+    # Login e cadastro ainda não possuem
+    # uma sessão autenticada.
+    if request.path in {
+        "/auth/login",
+        "/auth/register",
+    }:
+        return None
+
+    # Se não houver usuário autenticado,
+    # login_required continuará responsável
+    # pela resposta 401.
+    if not current_user_id():
+        return None
+
+    session_token = session.get(
+        "csrf_token"
+    )
+
+    request_token = request.headers.get(
+        "X-CSRF-Token"
+    )
+
+    if (
+        not session_token
+        or not request_token
+        or not secrets.compare_digest(
+            session_token,
+            request_token,
+        )
+    ):
+        return jsonify({
+            "error":
+                "Token CSRF inválido ou ausente."
+        }), 403
+
+    return None
+
+
+@app.route(
+    "/auth/csrf",
+    methods=["GET"],
+)
+@login_required
+def csrf_token():
+    return jsonify({
+        "csrf_token":
+            generate_csrf_token()
+    })
+
+
+# =========================================================
+# TAREFAS / CATEGORIAS
+# =========================================================
+
+def category_exists(
+    conn,
+    user_id,
+    category_name,
+):
+    category_name = normalize_text(
+        category_name
+    )
 
     if not category_name:
         return False
 
-    category = conn.execute("""
+    category = conn.execute(
+        """
         SELECT id
         FROM categories
-        WHERE name = ? COLLATE NOCASE
-    """, (category_name,)).fetchone()
+        WHERE user_id = ?
+          AND name = ? COLLATE NOCASE
+        """,
+        (
+            user_id,
+            category_name,
+        ),
+    ).fetchone()
 
     return category is not None
 
 
+def get_owned_task(
+    conn,
+    task_id,
+    user_id,
+):
+    return conn.execute(
+        """
+        SELECT *
+        FROM tasks
+        WHERE id = ?
+          AND user_id = ?
+        """,
+        (
+            task_id,
+            user_id,
+        ),
+    ).fetchone()
+
+
 # =========================================================
-# ROTA INICIAL
+# HEADERS DE SEGURANÇA
+# =========================================================
+
+@app.after_request
+def security_headers(response):
+    response.headers[
+        "X-Content-Type-Options"
+    ] = "nosniff"
+
+    response.headers[
+        "X-Frame-Options"
+    ] = "DENY"
+
+    response.headers[
+        "Referrer-Policy"
+    ] = "strict-origin-when-cross-origin"
+
+    response.headers[
+        "Permissions-Policy"
+    ] = (
+        "camera=(), "
+        "microphone=(), "
+        "geolocation=()"
+    )
+
+    response.headers[
+        "Cache-Control"
+    ] = "no-store"
+
+    return response
+
+
+# =========================================================
+# HOME
 # =========================================================
 
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
-        "message": "TaskFlow API funcionando!"
+        "message":
+            "TaskFlow API funcionando!"
     })
+
+
+# =========================================================
+# CADASTRO
+# =========================================================
+
+@app.route(
+    "/auth/register",
+    methods=["POST"],
+)
+@limiter.limit("5 per minute")
+def register():
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    name = normalize_text(
+        data.get("name")
+    )
+
+    email = normalize_text(
+        data.get("email")
+    ).lower()
+
+    password = data.get(
+        "password",
+        "",
+    )
+
+    if len(name) < 2 or len(name) > 80:
+        return jsonify({
+            "error":
+                "Informe um nome entre "
+                "2 e 80 caracteres."
+        }), 400
+
+    if (
+        not EMAIL_REGEX.match(email)
+        or len(email) > 254
+    ):
+        return jsonify({
+            "error":
+                "Informe um e-mail válido."
+        }), 400
+
+    password_error = validate_password(
+        password
+    )
+
+    if password_error:
+        return jsonify({
+            "error": password_error
+        }), 400
+
+    conn = get_connection()
+
+    try:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE email = ?
+                COLLATE NOCASE
+            """,
+            (email,),
+        ).fetchone()
+
+        if existing:
+            return jsonify({
+                "error":
+                    "Não foi possível criar "
+                    "a conta com esses dados."
+            }), 409
+
+        password_hash = (
+            generate_password_hash(
+                password,
+                method="scrypt",
+            )
+        )
+
+        cursor = conn.execute(
+            """
+            INSERT INTO users (
+                name,
+                email,
+                password_hash
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                name,
+                email,
+                password_hash,
+            ),
+        )
+
+        user_id = cursor.lastrowid
+
+        claim_legacy_data_for_first_user(
+            conn,
+            user_id,
+        )
+
+        seed_default_categories(
+            conn,
+            user_id,
+        )
+
+        conn.commit()
+
+        user = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                email,
+                created_at
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        session.clear()
+        session.permanent = True
+        session["user_id"] = user_id
+
+        rotate_csrf_token()
+
+        return jsonify({
+            "message":
+                "Conta criada com sucesso.",
+
+            "user":
+                public_user(user),
+        }), 201
+
+    except sqlite3.IntegrityError:
+        conn.rollback()
+
+        return jsonify({
+            "error":
+                "Não foi possível criar "
+                "a conta com esses dados."
+        }), 409
+
+    finally:
+        conn.close()
+
+
+# =========================================================
+# LOGIN
+# =========================================================
+
+@app.route(
+    "/auth/login",
+    methods=["POST"],
+)
+@limiter.limit("10 per minute")
+def login():
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    email = normalize_text(
+        data.get("email")
+    ).lower()
+
+    password = data.get(
+        "password",
+        "",
+    )
+
+    generic_error = {
+        "error":
+            "E-mail ou senha inválidos."
+    }
+
+    if (
+        not email
+        or not isinstance(
+            password,
+            str,
+        )
+    ):
+        return jsonify(
+            generic_error
+        ), 401
+
+    conn = get_connection()
+
+    try:
+        user = conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE email = ?
+                COLLATE NOCASE
+            """,
+            (email,),
+        ).fetchone()
+
+        if user is None:
+            return jsonify(
+                generic_error
+            ), 401
+
+        locked_until = parse_datetime(
+            user["locked_until"]
+        )
+
+        if (
+            locked_until
+            and locked_until > utc_now()
+        ):
+            seconds = int(
+                (
+                    locked_until
+                    - utc_now()
+                ).total_seconds()
+            )
+
+            return jsonify({
+                "error":
+                    "Muitas tentativas "
+                    "incorretas. Tente "
+                    "novamente mais tarde.",
+
+                "retry_after_seconds":
+                    max(seconds, 1),
+            }), 429
+
+        if not check_password_hash(
+            user["password_hash"],
+            password,
+        ):
+            attempts = (
+                int(
+                    user[
+                        "failed_login_attempts"
+                    ] or 0
+                )
+                + 1
+            )
+
+            if attempts >= MAX_LOGIN_ATTEMPTS:
+                lock_until = (
+                    utc_now()
+                    + timedelta(
+                        minutes=LOCK_MINUTES
+                    )
+                )
+
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET
+                        failed_login_attempts = 0,
+                        locked_until = ?,
+                        updated_at =
+                            CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        iso_utc(lock_until),
+                        user["id"],
+                    ),
+                )
+
+                conn.commit()
+
+                return jsonify({
+                    "error":
+                        "Muitas tentativas "
+                        "incorretas. A conta "
+                        "foi temporariamente "
+                        "bloqueada.",
+
+                    "retry_after_seconds":
+                        LOCK_MINUTES * 60,
+                }), 429
+
+            conn.execute(
+                """
+                UPDATE users
+                SET
+                    failed_login_attempts = ?,
+                    locked_until = NULL,
+                    updated_at =
+                        CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    attempts,
+                    user["id"],
+                ),
+            )
+
+            conn.commit()
+
+            return jsonify(
+                generic_error
+            ), 401
+
+        conn.execute(
+            """
+            UPDATE users
+            SET
+                failed_login_attempts = 0,
+                locked_until = NULL,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (user["id"],),
+        )
+
+        conn.commit()
+
+        session.clear()
+        session.permanent = True
+        session["user_id"] = user["id"]
+
+        rotate_csrf_token()
+
+        return jsonify({
+            "message":
+                "Login realizado com sucesso.",
+
+            "user":
+                public_user(user),
+        })
+
+    finally:
+        conn.close()
+
+
+# =========================================================
+# USUÁRIO ATUAL
+# =========================================================
+
+@app.route(
+    "/auth/me",
+    methods=["GET"],
+)
+@login_required
+def me():
+    conn = get_connection()
+
+    try:
+        user = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                email,
+                created_at
+            FROM users
+            WHERE id = ?
+            """,
+            (
+                current_user_id(),
+            ),
+        ).fetchone()
+
+        return jsonify({
+            "user":
+                public_user(user)
+        })
+
+    finally:
+        conn.close()
+
+
+# =========================================================
+# LOGOUT
+# =========================================================
+
+@app.route(
+    "/auth/logout",
+    methods=["POST"],
+)
+@login_required
+def logout():
+    session.clear()
+
+    return jsonify({
+        "message":
+            "Logout realizado com sucesso."
+    })
+
+
+# =========================================================
+# ALTERAR SENHA
+# =========================================================
+
+@app.route(
+    "/auth/change-password",
+    methods=["PUT"],
+)
+@login_required
+@limiter.limit("5 per minute")
+def change_password():
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    current_password = data.get(
+        "current_password",
+        "",
+    )
+
+    new_password = data.get(
+        "new_password",
+        "",
+    )
+
+    password_error = validate_password(
+        new_password
+    )
+
+    if password_error:
+        return jsonify({
+            "error": password_error
+        }), 400
+
+    if current_password == new_password:
+        return jsonify({
+            "error":
+                "A nova senha deve ser "
+                "diferente da senha atual."
+        }), 400
+
+    conn = get_connection()
+
+    try:
+        user = conn.execute(
+            """
+            SELECT
+                id,
+                password_hash
+            FROM users
+            WHERE id = ?
+            """,
+            (
+                current_user_id(),
+            ),
+        ).fetchone()
+
+        if (
+            user is None
+            or not check_password_hash(
+                user["password_hash"],
+                current_password,
+            )
+        ):
+            return jsonify({
+                "error":
+                    "Senha atual incorreta."
+            }), 401
+
+        password_hash = (
+            generate_password_hash(
+                new_password,
+                method="scrypt",
+            )
+        )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET
+                password_hash = ?,
+                updated_at =
+                    CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                password_hash,
+                current_user_id(),
+            ),
+        )
+
+        conn.commit()
+
+        # Renova o token depois de uma
+        # operação sensível.
+        rotate_csrf_token()
+
+        return jsonify({
+            "message":
+                "Senha alterada com sucesso."
+        })
+
+    finally:
+        conn.close()
 
 
 # =========================================================
 # LISTAR TAREFAS
 # =========================================================
 
-@app.route("/tasks", methods=["GET"])
+@app.route(
+    "/tasks",
+    methods=["GET"],
+)
+@login_required
 def get_tasks():
-
+    user_id = current_user_id()
     conn = get_connection()
 
-    tasks = conn.execute("""
-        SELECT *
-        FROM tasks
-        ORDER BY id DESC
-    """).fetchall()
+    try:
+        tasks = conn.execute(
+            """
+            SELECT
+                id,
+                title,
+                description,
+                category,
+                priority,
+                status,
+                due_date,
+                created_at
+            FROM tasks
+            WHERE user_id = ?
+            ORDER BY id DESC
+            """,
+            (user_id,),
+        ).fetchall()
 
-    conn.close()
+        return jsonify([
+            dict(task)
+            for task in tasks
+        ])
 
-    return jsonify([
-        dict(task)
-        for task in tasks
-    ])
+    finally:
+        conn.close()
 
 
 # =========================================================
 # CRIAR TAREFA
 # =========================================================
 
-@app.route("/tasks", methods=["POST"])
+@app.route(
+    "/tasks",
+    methods=["POST"],
+)
+@login_required
 def create_task():
-
-    data = request.get_json() or {}
+    data = request.get_json(
+        silent=True
+    ) or {}
 
     title = normalize_text(
         data.get("title")
     )
 
-    description = data.get(
-        "description"
+    description = normalize_text(
+        data.get("description")
     )
 
     category = normalize_text(
@@ -107,38 +990,46 @@ def create_task():
 
     priority = data.get(
         "priority",
-        "Média"
+        "Média",
     )
 
     status = data.get(
         "status",
-        "Pendente"
+        "Pendente",
     )
 
     due_date = data.get(
         "due_date"
     )
 
-    # ---------------------------------------------------------
-    # VALIDAÇÕES
-    # ---------------------------------------------------------
-
     if not title:
         return jsonify({
             "error":
                 "O título é obrigatório."
+        }), 400
+
+    if len(title) > 150:
+        return jsonify({
+            "error":
+                "O título deve ter no máximo "
+                "150 caracteres."
+        }), 400
+
+    if len(description) > 5000:
+        return jsonify({
+            "error":
+                "A descrição deve ter no máximo "
+                "5000 caracteres."
         }), 400
 
     if status not in STATUS_VALIDOS:
         return jsonify({
-            "error":
-                "Status inválido."
+            "error": "Status inválido."
         }), 400
 
     if priority not in PRIORIDADES_VALIDAS:
         return jsonify({
-            "error":
-                "Prioridade inválida."
+            "error": "Prioridade inválida."
         }), 400
 
     if not category:
@@ -147,295 +1038,276 @@ def create_task():
                 "A categoria é obrigatória."
         }), 400
 
+    user_id = current_user_id()
     conn = get_connection()
 
-    if not category_exists(
-        conn,
-        category
-    ):
-        conn.close()
-
-        return jsonify({
-            "error":
-                "Categoria não encontrada."
-        }), 400
-
-    # ---------------------------------------------------------
-    # CRIAR
-    # ---------------------------------------------------------
-
-    cursor = conn.execute("""
-        INSERT INTO tasks
-        (
-            title,
-            description,
+    try:
+        if not category_exists(
+            conn,
+            user_id,
             category,
-            priority,
-            status,
-            due_date
+        ):
+            return jsonify({
+                "error":
+                    "Categoria não encontrada."
+            }), 400
+
+        cursor = conn.execute(
+            """
+            INSERT INTO tasks (
+                user_id,
+                title,
+                description,
+                category,
+                priority,
+                status,
+                due_date
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                title,
+                description,
+                category,
+                priority,
+                status,
+                due_date,
+            ),
         )
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        title,
-        description,
-        category,
-        priority,
-        status,
-        due_date
-    ))
 
-    conn.commit()
+        conn.commit()
 
-    task_id = cursor.lastrowid
+        task = get_owned_task(
+            conn,
+            cursor.lastrowid,
+            user_id,
+        )
 
-    task = conn.execute("""
-        SELECT *
-        FROM tasks
-        WHERE id = ?
-    """, (
-        task_id,
-    )).fetchone()
+        return jsonify(
+            dict(task)
+        ), 201
 
-    conn.close()
-
-    return jsonify(
-        dict(task)
-    ), 201
+    finally:
+        conn.close()
 
 
 # =========================================================
-# ATUALIZAR TAREFA COMPLETA
+# ATUALIZAR TAREFA
 # =========================================================
 
 @app.route(
     "/tasks/<int:id>",
-    methods=["PUT"]
+    methods=["PUT"],
 )
+@login_required
 def update_task(id):
+    data = request.get_json(
+        silent=True
+    ) or {}
 
-    data = request.get_json() or {}
-
+    user_id = current_user_id()
     conn = get_connection()
 
-    task = conn.execute("""
-        SELECT *
-        FROM tasks
-        WHERE id = ?
-    """, (
-        id,
-    )).fetchone()
-
-    if task is None:
-        conn.close()
-
-        return jsonify({
-            "error":
-                "Tarefa não encontrada."
-        }), 404
-
-    title = normalize_text(
-        data.get(
-            "title",
-            task["title"]
+    try:
+        task = get_owned_task(
+            conn,
+            id,
+            user_id,
         )
-    )
 
-    category = normalize_text(
-        data.get(
-            "category",
-            task["category"]
+        if task is None:
+            return jsonify({
+                "error":
+                    "Tarefa não encontrada."
+            }), 404
+
+        title = normalize_text(
+            data.get(
+                "title",
+                task["title"],
+            )
         )
-    )
 
-    priority = data.get(
-        "priority",
-        task["priority"]
-    )
+        description = normalize_text(
+            data.get(
+                "description",
+                task["description"] or "",
+            )
+        )
 
-    novo_status = data.get(
-        "status",
-        task["status"]
-    )
+        category = normalize_text(
+            data.get(
+                "category",
+                task["category"],
+            )
+        )
 
-    # ---------------------------------------------------------
-    # VALIDAÇÕES
-    # ---------------------------------------------------------
+        priority = data.get(
+            "priority",
+            task["priority"],
+        )
 
-    if not title:
-        conn.close()
+        status = data.get(
+            "status",
+            task["status"],
+        )
 
-        return jsonify({
-            "error":
-                "O título é obrigatório."
-        }), 400
-
-    if (
-        novo_status
-        not in STATUS_VALIDOS
-    ):
-        conn.close()
-
-        return jsonify({
-            "error":
-                "Status inválido."
-        }), 400
-
-    if (
-        priority
-        not in PRIORIDADES_VALIDAS
-    ):
-        conn.close()
-
-        return jsonify({
-            "error":
-                "Prioridade inválida."
-        }), 400
-
-    if not category:
-        conn.close()
-
-        return jsonify({
-            "error":
-                "A categoria é obrigatória."
-        }), 400
-
-    if not category_exists(
-        conn,
-        category
-    ):
-        conn.close()
-
-        return jsonify({
-            "error":
-                "Categoria não encontrada."
-        }), 400
-
-    # ---------------------------------------------------------
-    # ATUALIZAR
-    # ---------------------------------------------------------
-
-    conn.execute("""
-        UPDATE tasks
-        SET
-            title = ?,
-            description = ?,
-            category = ?,
-            priority = ?,
-            status = ?,
-            due_date = ?
-        WHERE id = ?
-    """, (
-        title,
-
-        data.get(
-            "description",
-            task["description"]
-        ),
-
-        category,
-
-        priority,
-
-        novo_status,
-
-        data.get(
+        due_date = data.get(
             "due_date",
-            task["due_date"]
-        ),
+            task["due_date"],
+        )
 
-        id
-    ))
+        if not title:
+            return jsonify({
+                "error":
+                    "O título é obrigatório."
+            }), 400
 
-    conn.commit()
+        if len(title) > 150:
+            return jsonify({
+                "error":
+                    "O título deve ter no máximo "
+                    "150 caracteres."
+            }), 400
 
-    updated_task = conn.execute("""
-        SELECT *
-        FROM tasks
-        WHERE id = ?
-    """, (
-        id,
-    )).fetchone()
+        if len(description) > 5000:
+            return jsonify({
+                "error":
+                    "A descrição deve ter no máximo "
+                    "5000 caracteres."
+            }), 400
 
-    conn.close()
+        if status not in STATUS_VALIDOS:
+            return jsonify({
+                "error": "Status inválido."
+            }), 400
 
-    return jsonify(
-        dict(updated_task)
-    )
+        if priority not in PRIORIDADES_VALIDAS:
+            return jsonify({
+                "error":
+                    "Prioridade inválida."
+            }), 400
+
+        if not category_exists(
+            conn,
+            user_id,
+            category,
+        ):
+            return jsonify({
+                "error":
+                    "Categoria não encontrada."
+            }), 400
+
+        conn.execute(
+            """
+            UPDATE tasks
+            SET
+                title = ?,
+                description = ?,
+                category = ?,
+                priority = ?,
+                status = ?,
+                due_date = ?
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (
+                title,
+                description,
+                category,
+                priority,
+                status,
+                due_date,
+                id,
+                user_id,
+            ),
+        )
+
+        conn.commit()
+
+        updated_task = get_owned_task(
+            conn,
+            id,
+            user_id,
+        )
+
+        return jsonify(
+            dict(updated_task)
+        )
+
+    finally:
+        conn.close()
 
 
 # =========================================================
-# ALTERAR SOMENTE STATUS
+# ALTERAR STATUS
 # =========================================================
 
 @app.route(
     "/tasks/<int:id>/status",
-    methods=["PUT"]
+    methods=["PUT"],
 )
+@login_required
 def update_task_status(id):
+    data = request.get_json(
+        silent=True
+    ) or {}
 
-    data = request.get_json() or {}
-
-    novo_status = data.get(
+    new_status = data.get(
         "status"
     )
 
-    if not novo_status:
-        return jsonify({
-            "error":
-                "O status é obrigatório."
-        }), 400
-
-    if (
-        novo_status
-        not in STATUS_VALIDOS
-    ):
+    if new_status not in STATUS_VALIDOS:
         return jsonify({
             "error":
                 "Status inválido."
         }), 400
 
+    user_id = current_user_id()
     conn = get_connection()
 
-    task = conn.execute("""
-        SELECT *
-        FROM tasks
-        WHERE id = ?
-    """, (
-        id,
-    )).fetchone()
+    try:
+        task = get_owned_task(
+            conn,
+            id,
+            user_id,
+        )
 
-    if task is None:
+        if task is None:
+            return jsonify({
+                "error":
+                    "Tarefa não encontrada."
+            }), 404
+
+        conn.execute(
+            """
+            UPDATE tasks
+            SET status = ?
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (
+                new_status,
+                id,
+                user_id,
+            ),
+        )
+
+        conn.commit()
+
+        updated_task = get_owned_task(
+            conn,
+            id,
+            user_id,
+        )
+
+        return jsonify(
+            dict(updated_task)
+        )
+
+    finally:
         conn.close()
-
-        return jsonify({
-            "error":
-                "Tarefa não encontrada."
-        }), 404
-
-    conn.execute("""
-        UPDATE tasks
-        SET status = ?
-        WHERE id = ?
-    """, (
-        novo_status,
-        id
-    ))
-
-    conn.commit()
-
-    updated_task = conn.execute("""
-        SELECT *
-        FROM tasks
-        WHERE id = ?
-    """, (
-        id,
-    )).fetchone()
-
-    conn.close()
-
-    return jsonify(
-        dict(updated_task)
-    )
 
 
 # =========================================================
@@ -444,42 +1316,47 @@ def update_task_status(id):
 
 @app.route(
     "/tasks/<int:id>",
-    methods=["DELETE"]
+    methods=["DELETE"],
 )
+@login_required
 def delete_task(id):
-
+    user_id = current_user_id()
     conn = get_connection()
 
-    task = conn.execute("""
-        SELECT *
-        FROM tasks
-        WHERE id = ?
-    """, (
-        id,
-    )).fetchone()
+    try:
+        task = get_owned_task(
+            conn,
+            id,
+            user_id,
+        )
 
-    if task is None:
-        conn.close()
+        if task is None:
+            return jsonify({
+                "error":
+                    "Tarefa não encontrada."
+            }), 404
+
+        conn.execute(
+            """
+            DELETE FROM tasks
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (
+                id,
+                user_id,
+            ),
+        )
+
+        conn.commit()
 
         return jsonify({
-            "error":
-                "Tarefa não encontrada."
-        }), 404
+            "message":
+                "Tarefa excluída com sucesso."
+        })
 
-    conn.execute("""
-        DELETE FROM tasks
-        WHERE id = ?
-    """, (
-        id,
-    ))
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "message":
-            "Tarefa excluída com sucesso."
-    })
+    finally:
+        conn.close()
 
 
 # =========================================================
@@ -488,35 +1365,44 @@ def delete_task(id):
 
 @app.route(
     "/categories",
-    methods=["GET"]
+    methods=["GET"],
 )
+@login_required
 def get_categories():
-
+    user_id = current_user_id()
     conn = get_connection()
 
-    categories = conn.execute("""
-        SELECT
-            c.id,
-            c.name,
-            c.created_at,
-            COUNT(t.id) AS task_count
-        FROM categories c
-        LEFT JOIN tasks t
-            ON t.category = c.name COLLATE NOCASE
-        GROUP BY
-            c.id,
-            c.name,
-            c.created_at
-        ORDER BY
-            c.name COLLATE NOCASE ASC
-    """).fetchall()
+    try:
+        categories = conn.execute(
+            """
+            SELECT
+                c.id,
+                c.name,
+                c.created_at,
+                COUNT(t.id) AS task_count
+            FROM categories c
+            LEFT JOIN tasks t
+                ON t.user_id = c.user_id
+               AND t.category =
+                    c.name COLLATE NOCASE
+            WHERE c.user_id = ?
+            GROUP BY
+                c.id,
+                c.name,
+                c.created_at
+            ORDER BY
+                c.name COLLATE NOCASE ASC
+            """,
+            (user_id,),
+        ).fetchall()
 
-    conn.close()
+        return jsonify([
+            dict(category)
+            for category in categories
+        ])
 
-    return jsonify([
-        dict(category)
-        for category in categories
-    ])
+    finally:
+        conn.close()
 
 
 # =========================================================
@@ -525,11 +1411,13 @@ def get_categories():
 
 @app.route(
     "/categories",
-    methods=["POST"]
+    methods=["POST"],
 )
+@login_required
 def create_category():
-
-    data = request.get_json() or {}
+    data = request.get_json(
+        silent=True
+    ) or {}
 
     name = normalize_text(
         data.get("name")
@@ -538,70 +1426,87 @@ def create_category():
     if not name:
         return jsonify({
             "error":
-                "O nome da categoria é obrigatório."
+                "O nome da categoria "
+                "é obrigatório."
         }), 400
 
     if len(name) > 50:
         return jsonify({
             "error":
-                "O nome da categoria deve ter no máximo 50 caracteres."
+                "O nome da categoria deve "
+                "ter no máximo 50 caracteres."
         }), 400
 
+    user_id = current_user_id()
     conn = get_connection()
 
-    existing = conn.execute("""
-        SELECT *
-        FROM categories
-        WHERE name = ? COLLATE NOCASE
-    """, (
-        name,
-    )).fetchone()
-
-    if existing:
-        conn.close()
-
-        return jsonify({
-            "error":
-                "Essa categoria já existe."
-        }), 409
-
     try:
-        cursor = conn.execute("""
-            INSERT INTO categories (name)
-            VALUES (?)
-        """, (
-            name,
-        ))
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM categories
+            WHERE user_id = ?
+              AND name = ? COLLATE NOCASE
+            """,
+            (
+                user_id,
+                name,
+            ),
+        ).fetchone()
+
+        if existing:
+            return jsonify({
+                "error":
+                    "Essa categoria já existe."
+            }), 409
+
+        cursor = conn.execute(
+            """
+            INSERT INTO categories (
+                user_id,
+                name
+            )
+            VALUES (?, ?)
+            """,
+            (
+                user_id,
+                name,
+            ),
+        )
 
         conn.commit()
 
-        category = conn.execute("""
+        category = conn.execute(
+            """
             SELECT
                 id,
                 name,
                 created_at
             FROM categories
             WHERE id = ?
-        """, (
-            cursor.lastrowid,
-        )).fetchone()
-
-        conn.close()
+              AND user_id = ?
+            """,
+            (
+                cursor.lastrowid,
+                user_id,
+            ),
+        ).fetchone()
 
         result = dict(category)
         result["task_count"] = 0
 
-        return jsonify(
-            result
-        ), 201
+        return jsonify(result), 201
 
     except sqlite3.IntegrityError:
-        conn.close()
+        conn.rollback()
 
         return jsonify({
             "error":
                 "Essa categoria já existe."
         }), 409
+
+    finally:
+        conn.close()
 
 
 # =========================================================
@@ -610,11 +1515,13 @@ def create_category():
 
 @app.route(
     "/categories/<int:id>",
-    methods=["PUT"]
+    methods=["PUT"],
 )
+@login_required
 def update_category(id):
-
-    data = request.get_json() or {}
+    data = request.get_json(
+        silent=True
+    ) or {}
 
     new_name = normalize_text(
         data.get("name")
@@ -623,84 +1530,96 @@ def update_category(id):
     if not new_name:
         return jsonify({
             "error":
-                "O nome da categoria é obrigatório."
+                "O nome da categoria "
+                "é obrigatório."
         }), 400
 
     if len(new_name) > 50:
         return jsonify({
             "error":
-                "O nome da categoria deve ter no máximo 50 caracteres."
+                "O nome da categoria deve "
+                "ter no máximo 50 caracteres."
         }), 400
 
+    user_id = current_user_id()
     conn = get_connection()
 
-    category = conn.execute("""
-        SELECT *
-        FROM categories
-        WHERE id = ?
-    """, (
-        id,
-    )).fetchone()
-
-    if category is None:
-        conn.close()
-
-        return jsonify({
-            "error":
-                "Categoria não encontrada."
-        }), 404
-
-    duplicate = conn.execute("""
-        SELECT id
-        FROM categories
-        WHERE name = ? COLLATE NOCASE
-          AND id != ?
-    """, (
-        new_name,
-        id
-    )).fetchone()
-
-    if duplicate:
-        conn.close()
-
-        return jsonify({
-            "error":
-                "Essa categoria já existe."
-        }), 409
-
-    old_name = category["name"]
-
     try:
-        # -----------------------------------------------------
-        # Atualiza a categoria
-        # -----------------------------------------------------
+        category = conn.execute(
+            """
+            SELECT *
+            FROM categories
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (
+                id,
+                user_id,
+            ),
+        ).fetchone()
 
-        conn.execute("""
+        if category is None:
+            return jsonify({
+                "error":
+                    "Categoria não encontrada."
+            }), 404
+
+        duplicate = conn.execute(
+            """
+            SELECT id
+            FROM categories
+            WHERE user_id = ?
+              AND name = ? COLLATE NOCASE
+              AND id != ?
+            """,
+            (
+                user_id,
+                new_name,
+                id,
+            ),
+        ).fetchone()
+
+        if duplicate:
+            return jsonify({
+                "error":
+                    "Essa categoria já existe."
+            }), 409
+
+        old_name = category["name"]
+
+        conn.execute(
+            """
             UPDATE categories
             SET name = ?
             WHERE id = ?
-        """, (
-            new_name,
-            id
-        ))
+              AND user_id = ?
+            """,
+            (
+                new_name,
+                id,
+                user_id,
+            ),
+        )
 
-        # -----------------------------------------------------
-        # Atualiza automaticamente todas as tarefas
-        # que utilizavam o nome antigo.
-        # -----------------------------------------------------
-
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE tasks
             SET category = ?
-            WHERE category = ? COLLATE NOCASE
-        """, (
-            new_name,
-            old_name
-        ))
+            WHERE user_id = ?
+              AND category = ?
+                    COLLATE NOCASE
+            """,
+            (
+                new_name,
+                user_id,
+                old_name,
+            ),
+        )
 
         conn.commit()
 
-        updated_category = conn.execute("""
+        updated_category = conn.execute(
+            """
             SELECT
                 c.id,
                 c.name,
@@ -708,17 +1627,21 @@ def update_category(id):
                 COUNT(t.id) AS task_count
             FROM categories c
             LEFT JOIN tasks t
-                ON t.category = c.name COLLATE NOCASE
+                ON t.user_id = c.user_id
+               AND t.category =
+                    c.name COLLATE NOCASE
             WHERE c.id = ?
+              AND c.user_id = ?
             GROUP BY
                 c.id,
                 c.name,
                 c.created_at
-        """, (
-            id,
-        )).fetchone()
-
-        conn.close()
+            """,
+            (
+                id,
+                user_id,
+            ),
+        ).fetchone()
 
         return jsonify(
             dict(updated_category)
@@ -726,12 +1649,14 @@ def update_category(id):
 
     except sqlite3.IntegrityError:
         conn.rollback()
-        conn.close()
 
         return jsonify({
             "error":
                 "Essa categoria já existe."
         }), 409
+
+    finally:
+        conn.close()
 
 
 # =========================================================
@@ -740,68 +1665,81 @@ def update_category(id):
 
 @app.route(
     "/categories/<int:id>",
-    methods=["DELETE"]
+    methods=["DELETE"],
 )
+@login_required
 def delete_category(id):
-
+    user_id = current_user_id()
     conn = get_connection()
 
-    category = conn.execute("""
-        SELECT *
-        FROM categories
-        WHERE id = ?
-    """, (
-        id,
-    )).fetchone()
+    try:
+        category = conn.execute(
+            """
+            SELECT *
+            FROM categories
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (
+                id,
+                user_id,
+            ),
+        ).fetchone()
 
-    if category is None:
-        conn.close()
+        if category is None:
+            return jsonify({
+                "error":
+                    "Categoria não encontrada."
+            }), 404
+
+        task_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM tasks
+            WHERE user_id = ?
+              AND category = ?
+                    COLLATE NOCASE
+            """,
+            (
+                user_id,
+                category["name"],
+            ),
+        ).fetchone()[0]
+
+        if task_count > 0:
+            return jsonify({
+                "error":
+                    "Não é possível excluir "
+                    "esta categoria porque "
+                    "existem tarefas "
+                    "vinculadas a ela.",
+
+                "task_count":
+                    task_count,
+            }), 409
+
+        conn.execute(
+            """
+            DELETE FROM categories
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (
+                id,
+                user_id,
+            ),
+        )
+
+        conn.commit()
 
         return jsonify({
-            "error":
-                "Categoria não encontrada."
-        }), 404
+            "message":
+                "Categoria excluída "
+                "com sucesso."
+        })
 
-    # ---------------------------------------------------------
-    # VERIFICAR SE ESTÁ SENDO UTILIZADA
-    # ---------------------------------------------------------
-
-    task_count = conn.execute("""
-        SELECT COUNT(*)
-        FROM tasks
-        WHERE category = ? COLLATE NOCASE
-    """, (
-        category["name"],
-    )).fetchone()[0]
-
-    if task_count > 0:
+    finally:
         conn.close()
-
-        return jsonify({
-            "error":
-                "Não é possível excluir esta categoria porque existem tarefas vinculadas a ela.",
-            "task_count":
-                task_count
-        }), 409
-
-    # ---------------------------------------------------------
-    # EXCLUIR
-    # ---------------------------------------------------------
-
-    conn.execute("""
-        DELETE FROM categories
-        WHERE id = ?
-    """, (
-        id,
-    ))
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        "message":
-            "Categoria excluída com sucesso."
-    })
 
 
 # =========================================================
@@ -810,70 +1748,117 @@ def delete_category(id):
 
 @app.route(
     "/dashboard",
-    methods=["GET"]
+    methods=["GET"],
 )
+@login_required
 def dashboard():
-
+    user_id = current_user_id()
     conn = get_connection()
 
-    total = conn.execute("""
-        SELECT COUNT(*)
-        FROM tasks
-    """).fetchone()[0]
+    try:
+        result = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
 
-    pending = conn.execute("""
-        SELECT COUNT(*)
-        FROM tasks
-        WHERE status = 'Pendente'
-    """).fetchone()[0]
+                SUM(
+                    CASE
+                        WHEN status = 'Pendente'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS pending,
 
-    progress = conn.execute("""
-        SELECT COUNT(*)
-        FROM tasks
-        WHERE status = 'Em andamento'
-    """).fetchone()[0]
+                SUM(
+                    CASE
+                        WHEN status = 'Em andamento'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS progress,
 
-    completed = conn.execute("""
-        SELECT COUNT(*)
-        FROM tasks
-        WHERE status = 'Concluída'
-    """).fetchone()[0]
+                SUM(
+                    CASE
+                        WHEN status = 'Concluída'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS completed
 
-    conn.close()
+            FROM tasks
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
 
-    percentual = 0
+    finally:
+        conn.close()
+
+    total = result["total"] or 0
+    pending = result["pending"] or 0
+    progress = result["progress"] or 0
+    completed = result["completed"] or 0
+
+    percentage = 0
 
     if total > 0:
-        percentual = round(
-            (
-                completed /
-                total
-            ) * 100
+        percentage = round(
+            (completed / total) * 100
         )
 
     return jsonify({
-        "total":
-            total,
-
-        "pending":
-            pending,
-
-        "progress":
-            progress,
-
-        "completed":
-            completed,
-
-        "percentage":
-            percentual
+        "total": total,
+        "pending": pending,
+        "progress": progress,
+        "completed": completed,
+        "percentage": percentage,
     })
 
 
 # =========================================================
-# INICIAR SERVIDOR
+# ERROS
+# =========================================================
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({
+        "error":
+            "Rota não encontrada."
+    }), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    return jsonify({
+        "error":
+            "Método não permitido."
+    }), 405
+
+
+@app.errorhandler(429)
+def rate_limit_exceeded(error):
+    return jsonify({
+        "error":
+            "Muitas requisições. "
+            "Aguarde um momento e tente novamente."
+    }), 429
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({
+        "error":
+            "Erro interno do servidor."
+    }), 500
+
+
+# =========================================================
+# SERVIDOR LOCAL
 # =========================================================
 
 if __name__ == "__main__":
     app.run(
-        debug=True
+        host="127.0.0.1",
+        port=5000,
+        debug=not IS_PRODUCTION,
     )
