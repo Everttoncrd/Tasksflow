@@ -1,4 +1,8 @@
-import { NavLink } from "react-router-dom";
+import {
+  NavLink,
+  useNavigate,
+} from "react-router-dom";
+
 import {
   LayoutDashboard,
   ListTodo,
@@ -6,72 +10,180 @@ import {
   Tags,
   Settings,
   CheckCircle2,
+  LogOut,
+  UserRound,
 } from "lucide-react";
 
+import {
+  useAuth,
+} from "../context/AuthContext";
+
+
 function Sidebar() {
+  const {
+    user,
+    logout,
+  } = useAuth();
+
+  const navigate =
+    useNavigate();
+
+
+  async function handleLogout() {
+    try {
+      await logout();
+    } finally {
+      navigate(
+        "/login",
+        {
+          replace: true,
+        }
+      );
+    }
+  }
+
+
+  const linkClass =
+    ({ isActive }) =>
+      `sidebar-link ${
+        isActive
+          ? "active"
+          : ""
+      }`;
+
+
   return (
     <aside className="sidebar">
+
       <div className="logo">
+
         <div className="logo-icon">
-          <CheckCircle2 size={23} />
+          <CheckCircle2
+            size={23}
+          />
         </div>
-        <span>TaskFlow</span>
+
+        <span>
+          TaskFlow
+        </span>
+
       </div>
 
+
       <nav className="sidebar-menu">
+
         <NavLink
           to="/"
           end
-          className={({ isActive }) =>
-            `sidebar-link ${isActive ? "active" : ""}`
-          }
+          className={linkClass}
         >
-          <LayoutDashboard size={20} />
-          <span>Dashboard</span>
+          <LayoutDashboard
+            size={20}
+          />
+
+          <span>
+            Dashboard
+          </span>
         </NavLink>
+
 
         <NavLink
           to="/tasks"
-          className={({ isActive }) =>
-            `sidebar-link ${isActive ? "active" : ""}`
-          }
+          className={linkClass}
         >
-          <ListTodo size={20} />
-          <span>Minhas tarefas</span>
+          <ListTodo
+            size={20}
+          />
+
+          <span>
+            Minhas tarefas
+          </span>
         </NavLink>
+
 
         <NavLink
           to="/calendar"
-          className={({ isActive }) =>
-            `sidebar-link ${isActive ? "active" : ""}`
-          }
+          className={linkClass}
         >
-          <CalendarDays size={20} />
-          <span>Calendário</span>
+          <CalendarDays
+            size={20}
+          />
+
+          <span>
+            Calendário
+          </span>
         </NavLink>
+
 
         <NavLink
           to="/categories"
-          className={({ isActive }) =>
-            `sidebar-link ${isActive ? "active" : ""}`
-          }
+          className={linkClass}
         >
-          <Tags size={20} />
-          <span>Categorias</span>
+          <Tags
+            size={20}
+          />
+
+          <span>
+            Categorias
+          </span>
         </NavLink>
+
       </nav>
 
+
+      <div className="sidebar-account">
+
+        <UserRound
+          size={18}
+        />
+
+        <div>
+          <strong>
+            {user?.name}
+          </strong>
+
+          <span>
+            {user?.email}
+          </span>
+        </div>
+
+      </div>
+
+
       <div className="Sidebar-bottom">
+
         <NavLink
           to="/settings"
-          className={({ isActive }) =>
-            `sidebar-link ${isActive ? "active" : ""}`
+          className={linkClass}
+        >
+          <Settings
+            size={20}
+          />
+
+          <span>
+            Configurações
+          </span>
+        </NavLink>
+
+
+        <button
+          type="button"
+          className="sidebar-link sidebar-logout"
+          onClick={
+            handleLogout
           }
         >
-          <Settings size={20} />
-          <span>Configurações</span>
-        </NavLink>
+          <LogOut
+            size={20}
+          />
+
+          <span>
+            Sair
+          </span>
+        </button>
+
       </div>
+
     </aside>
   );
 }

@@ -1,26 +1,129 @@
-import { useEffect, useState } from "react";
-import { Routes, Route } from "react-router-dom";
+import {
+  useEffect,
+  useState,
+} from "react";
 
-import Sidebar from "./components/Sidebar";
+import {
+  Navigate,
+  Route,
+  Routes,
+} from "react-router-dom";
 
-import Dashboard from "./pages/Dashboard";
-import Tasks from "./pages/Tasks";
-import Calendar from "./pages/Calendar";
-import Categories from "./pages/Categories";
-import Settings from "./pages/Settings";
+import Sidebar
+  from "./components/Sidebar";
+
+import ProtectedRoute
+  from "./components/ProtectedRoute";
+
+import {
+  AuthProvider,
+} from "./context/AuthContext";
+
+import Dashboard
+  from "./pages/Dashboard";
+
+import Tasks
+  from "./pages/Tasks";
+
+import Calendar
+  from "./pages/Calendar";
+
+import Categories
+  from "./pages/Categories";
+
+import Settings
+  from "./pages/Settings";
+
+import Login
+  from "./pages/Login";
+
+import Register
+  from "./pages/Register";
 
 import "./App.css";
 
-function App() {
-  const [theme, setTheme] = useState("light");
 
-  // =========================================================
-  // DESCOBRIR TEMA
-  // =========================================================
+function PrivateLayout({
+  theme,
+}) {
+  return (
+    <div
+      className="app-layout"
+      data-theme={theme}
+    >
+
+      <Sidebar />
+
+      <main className="main-content">
+
+        <Routes>
+
+          <Route
+            path="/"
+            element={
+              <Dashboard />
+            }
+          />
+
+          <Route
+            path="/tasks"
+            element={
+              <Tasks />
+            }
+          />
+
+          <Route
+            path="/calendar"
+            element={
+              <Calendar />
+            }
+          />
+
+          <Route
+            path="/categories"
+            element={
+              <Categories />
+            }
+          />
+
+          <Route
+            path="/settings"
+            element={
+              <Settings />
+            }
+          />
+
+          <Route
+            path="*"
+            element={
+              <Navigate
+                to="/"
+                replace
+              />
+            }
+          />
+
+        </Routes>
+
+      </main>
+
+    </div>
+  );
+}
+
+
+function AppContent() {
+  const [
+    theme,
+    setTheme,
+  ] = useState("light");
+
 
   function getSavedTheme() {
     const storedSettings =
-      localStorage.getItem("taskflow-settings");
+      localStorage.getItem(
+        "taskflow-settings"
+      );
 
     if (!storedSettings) {
       return "light";
@@ -28,70 +131,60 @@ function App() {
 
     try {
       const settings =
-        JSON.parse(storedSettings);
+        JSON.parse(
+          storedSettings
+        );
 
-      return settings.theme || "light";
-    } catch (error) {
-      console.error(
-        "Erro ao carregar tema:",
-        error
+      return (
+        settings.theme ||
+        "light"
       );
-
+    } catch {
       return "light";
     }
   }
 
-  // =========================================================
-  // APLICAR TEMA
-  // =========================================================
 
-  function applyTheme(selectedTheme) {
-    let finalTheme = selectedTheme;
+  function applyTheme(
+    selectedTheme
+  ) {
+    let finalTheme =
+      selectedTheme;
 
-    if (selectedTheme === "system") {
-      const prefersDark =
+    if (
+      selectedTheme ===
+      "system"
+    ) {
+      finalTheme =
         window.matchMedia(
           "(prefers-color-scheme: dark)"
-        ).matches;
-
-      finalTheme =
-        prefersDark
+        ).matches
           ? "dark"
           : "light";
     }
 
-    setTheme(finalTheme);
-
-    document.documentElement.setAttribute(
-      "data-theme",
+    setTheme(
       finalTheme
     );
+
+    document.documentElement
+      .setAttribute(
+        "data-theme",
+        finalTheme
+      );
   }
 
-  // =========================================================
-  // CARREGAR TEMA INICIAL
-  // =========================================================
 
   useEffect(() => {
-    const savedTheme =
-      getSavedTheme();
-
-    applyTheme(savedTheme);
-
-    // -------------------------------------------------------
-    // ESCUTAR ALTERAÇÕES NAS CONFIGURAÇÕES
-    // -------------------------------------------------------
+    applyTheme(
+      getSavedTheme()
+    );
 
     function handleSettingsChanged() {
-      const updatedTheme =
-        getSavedTheme();
-
-      applyTheme(updatedTheme);
+      applyTheme(
+        getSavedTheme()
+      );
     }
-
-    // -------------------------------------------------------
-    // ESCUTAR MUDANÇA DO TEMA DO SISTEMA
-    // -------------------------------------------------------
 
     const systemTheme =
       window.matchMedia(
@@ -99,21 +192,21 @@ function App() {
       );
 
     function handleSystemThemeChange() {
-      const currentTheme =
-        getSavedTheme();
-
-      if (currentTheme === "system") {
-        applyTheme("system");
+      if (
+        getSavedTheme() ===
+        "system"
+      ) {
+        applyTheme(
+          "system"
+        );
       }
     }
 
-    // Evento personalizado do TaskFlow
     window.addEventListener(
       "taskflow-settings-changed",
       handleSettingsChanged
     );
 
-    // Evento do navegador
     systemTheme.addEventListener(
       "change",
       handleSystemThemeChange
@@ -132,42 +225,51 @@ function App() {
     };
   }, []);
 
+
   return (
-    <div
-      className="app-layout"
-      data-theme={theme}
-    >
-      <Sidebar />
+    <Routes>
 
-      <main className="main-content">
-        <Routes>
-          <Route
-            path="/"
-            element={<Dashboard />}
-          />
+      <Route
+        path="/login"
+        element={
+          <Login />
+        }
+      />
 
-          <Route
-            path="/tasks"
-            element={<Tasks />}
-          />
+      <Route
+        path="/register"
+        element={
+          <Register />
+        }
+      />
 
-          <Route
-            path="/calendar"
-            element={<Calendar />}
-          />
+      <Route
+        element={
+          <ProtectedRoute />
+        }
+      >
 
-          <Route
-            path="/categories"
-            element={<Categories />}
-          />
+        <Route
+          path="/*"
+          element={
+            <PrivateLayout
+              theme={theme}
+            />
+          }
+        />
 
-          <Route
-            path="/settings"
-            element={<Settings />}
-          />
-        </Routes>
-      </main>
-    </div>
+      </Route>
+
+    </Routes>
+  );
+}
+
+
+function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
 

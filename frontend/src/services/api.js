@@ -1,306 +1,407 @@
-const API_URL = "http://127.0.0.1:5000";
+const API_URL =
+  "http://localhost:5000";
+
+let csrfToken = null;
 
 
 // =========================================================
-// FUNÇÃO AUXILIAR PARA LER ERROS DA API
+// ERROS
 // =========================================================
 
-async function getErrorMessage(response, fallbackMessage) {
+async function getErrorMessage(
+  response,
+  fallback
+) {
   try {
-    const data = await response.json();
+    const data =
+      await response.json();
 
-    return data.error || fallbackMessage;
+    return (
+      data.error ||
+      fallback
+    );
   } catch {
-    return fallbackMessage;
+    return fallback;
   }
 }
 
 
 // =========================================================
-// LISTAR TAREFAS
+// CSRF
 // =========================================================
 
-export async function getTasks() {
-  const response = await fetch(
-    `${API_URL}/tasks`
-  );
+async function fetchCsrfToken() {
+  const response =
+    await fetch(
+      `${API_URL}/auth/csrf`,
+      {
+        method: "GET",
+        credentials: "include",
+      }
+    );
 
   if (!response.ok) {
+    csrfToken = null;
+
     throw new Error(
-      "Erro ao carregar tarefas."
+      "Não foi possível validar a sessão."
     );
   }
 
-  return response.json();
+  const data =
+    await response.json();
+
+  csrfToken =
+    data.csrf_token;
+
+  return csrfToken;
+}
+
+
+function requiresCsrf(method) {
+  return ![
+    "GET",
+    "HEAD",
+    "OPTIONS",
+  ].includes(
+    method.toUpperCase()
+  );
 }
 
 
 // =========================================================
-// DASHBOARD
+// FETCH CENTRAL
 // =========================================================
 
-export async function getDashboard() {
-  const response = await fetch(
-    `${API_URL}/dashboard`
-  );
+async function apiFetch(
+  path,
+  options = {}
+) {
+  const method =
+    (
+      options.method ||
+      "GET"
+    ).toUpperCase();
 
-  if (!response.ok) {
-    throw new Error(
-      "Erro ao carregar dashboard."
-    );
+  const isPublicAuthRoute =
+    path === "/auth/login" ||
+    path === "/auth/register";
+
+
+  if (
+    requiresCsrf(method) &&
+    !isPublicAuthRoute &&
+    !csrfToken
+  ) {
+    await fetchCsrfToken();
   }
 
-  return response.json();
-}
+
+  const headers = {
+    ...(options.body
+      ? {
+          "Content-Type":
+            "application/json",
+        }
+      : {}),
+
+    ...(options.headers || {}),
+  };
 
 
-// =========================================================
-// CRIAR TAREFA
-// =========================================================
+  if (
+    requiresCsrf(method) &&
+    !isPublicAuthRoute &&
+    csrfToken
+  ) {
+    headers[
+      "X-CSRF-Token"
+    ] = csrfToken;
+  }
 
-export async function createTask(task) {
-  const response = await fetch(
-    `${API_URL}/tasks`,
-    {
-      method: "POST",
 
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
+  let response =
+    await fetch(
+      `${API_URL}${path}`,
+      {
+        ...options,
+        method,
+        credentials: "include",
+        headers,
+      }
+    );
 
-      body: JSON.stringify(task),
+
+  // =======================================================
+  // TENTA RENOVAR O CSRF UMA VEZ
+  // =======================================================
+
+  if (
+    response.status === 403 &&
+    !isPublicAuthRoute
+  ) {
+    csrfToken = null;
+
+    try {
+      await fetchCsrfToken();
+
+      headers[
+        "X-CSRF-Token"
+      ] = csrfToken;
+
+      response =
+        await fetch(
+          `${API_URL}${path}`,
+          {
+            ...options,
+            method,
+            credentials:
+              "include",
+            headers,
+          }
+        );
+    } catch {
+      // O erro será tratado abaixo.
     }
-  );
+  }
+
 
   if (!response.ok) {
     const message =
       await getErrorMessage(
         response,
-        "Erro ao criar tarefa."
+        "Erro ao comunicar com o servidor."
       );
 
-    throw new Error(message);
+    const error =
+      new Error(message);
+
+    error.status =
+      response.status;
+
+    throw error;
   }
+
 
   return response.json();
 }
 
 
 // =========================================================
-// ATUALIZAR TAREFA COMPLETA
+// AUTENTICAÇÃO
 // =========================================================
 
-export async function updateTask(id, task) {
-  const response = await fetch(
-    `${API_URL}/tasks/${id}`,
+export async function registerUser(
+  data
+) {
+  const result =
+    await apiFetch(
+      "/auth/register",
+      {
+        method: "POST",
+        body:
+          JSON.stringify(data),
+      }
+    );
+
+  csrfToken = null;
+
+  await fetchCsrfToken();
+
+  return result;
+}
+
+
+export async function loginUser(
+  data
+) {
+  const result =
+    await apiFetch(
+      "/auth/login",
+      {
+        method: "POST",
+        body:
+          JSON.stringify(data),
+      }
+    );
+
+  csrfToken = null;
+
+  await fetchCsrfToken();
+
+  return result;
+}
+
+
+export async function logoutUser() {
+  const result =
+    await apiFetch(
+      "/auth/logout",
+      {
+        method: "POST",
+      }
+    );
+
+  csrfToken = null;
+
+  return result;
+}
+
+
+export function getCurrentUser() {
+  return apiFetch(
+    "/auth/me"
+  );
+}
+
+
+export function changePassword(
+  data
+) {
+  return apiFetch(
+    "/auth/change-password",
     {
       method: "PUT",
 
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
-
-      body: JSON.stringify(task),
+      body:
+        JSON.stringify(data),
     }
   );
-
-  if (!response.ok) {
-    const message =
-      await getErrorMessage(
-        response,
-        "Erro ao atualizar tarefa."
-      );
-
-    throw new Error(message);
-  }
-
-  return response.json();
 }
 
 
 // =========================================================
-// ATUALIZAR SOMENTE O STATUS
+// TAREFAS
 // =========================================================
 
-export async function updateTaskStatus(
+export function getTasks() {
+  return apiFetch(
+    "/tasks"
+  );
+}
+
+
+export function getDashboard() {
+  return apiFetch(
+    "/dashboard"
+  );
+}
+
+
+export function createTask(
+  task
+) {
+  return apiFetch(
+    "/tasks",
+    {
+      method: "POST",
+
+      body:
+        JSON.stringify(task),
+    }
+  );
+}
+
+
+export function updateTask(
+  id,
+  task
+) {
+  return apiFetch(
+    `/tasks/${id}`,
+    {
+      method: "PUT",
+
+      body:
+        JSON.stringify(task),
+    }
+  );
+}
+
+
+export function updateTaskStatus(
   id,
   status
 ) {
-  const response = await fetch(
-    `${API_URL}/tasks/${id}/status`,
+  return apiFetch(
+    `/tasks/${id}/status`,
     {
       method: "PUT",
 
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
-
-      body: JSON.stringify({
-        status: status,
-      }),
+      body:
+        JSON.stringify({
+          status,
+        }),
     }
   );
-
-  if (!response.ok) {
-    const message =
-      await getErrorMessage(
-        response,
-        "Erro ao atualizar status da tarefa."
-      );
-
-    throw new Error(message);
-  }
-
-  return response.json();
 }
 
 
-// =========================================================
-// EXCLUIR TAREFA
-// =========================================================
-
-export async function deleteTask(id) {
-  const response = await fetch(
-    `${API_URL}/tasks/${id}`,
+export function deleteTask(
+  id
+) {
+  return apiFetch(
+    `/tasks/${id}`,
     {
       method: "DELETE",
     }
   );
-
-  if (!response.ok) {
-    const message =
-      await getErrorMessage(
-        response,
-        "Erro ao excluir tarefa."
-      );
-
-    throw new Error(message);
-  }
-
-  return response.json();
 }
 
 
 // =========================================================
-// LISTAR CATEGORIAS
+// CATEGORIAS
 // =========================================================
 
-export async function getCategories() {
-  const response = await fetch(
-    `${API_URL}/categories`
+export function getCategories() {
+  return apiFetch(
+    "/categories"
   );
-
-  if (!response.ok) {
-    const message =
-      await getErrorMessage(
-        response,
-        "Erro ao carregar categorias."
-      );
-
-    throw new Error(message);
-  }
-
-  return response.json();
 }
 
 
-// =========================================================
-// CRIAR CATEGORIA
-// =========================================================
-
-export async function createCategory(name) {
-  const response = await fetch(
-    `${API_URL}/categories`,
+export function createCategory(
+  name
+) {
+  return apiFetch(
+    "/categories",
     {
       method: "POST",
 
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
-
-      body: JSON.stringify({
-        name: name,
-      }),
+      body:
+        JSON.stringify({
+          name,
+        }),
     }
   );
-
-  if (!response.ok) {
-    const message =
-      await getErrorMessage(
-        response,
-        "Erro ao criar categoria."
-      );
-
-    throw new Error(message);
-  }
-
-  return response.json();
 }
 
 
-// =========================================================
-// EDITAR CATEGORIA
-// =========================================================
-
-export async function updateCategory(
+export function updateCategory(
   id,
   name
 ) {
-  const response = await fetch(
-    `${API_URL}/categories/${id}`,
+  return apiFetch(
+    `/categories/${id}`,
     {
       method: "PUT",
 
-      headers: {
-        "Content-Type":
-          "application/json",
-      },
-
-      body: JSON.stringify({
-        name: name,
-      }),
+      body:
+        JSON.stringify({
+          name,
+        }),
     }
   );
-
-  if (!response.ok) {
-    const message =
-      await getErrorMessage(
-        response,
-        "Erro ao atualizar categoria."
-      );
-
-    throw new Error(message);
-  }
-
-  return response.json();
 }
 
 
-// =========================================================
-// EXCLUIR CATEGORIA
-// =========================================================
-
-export async function deleteCategory(id) {
-  const response = await fetch(
-    `${API_URL}/categories/${id}`,
+export function deleteCategory(
+  id
+) {
+  return apiFetch(
+    `/categories/${id}`,
     {
       method: "DELETE",
     }
   );
-
-  if (!response.ok) {
-    const message =
-      await getErrorMessage(
-        response,
-        "Erro ao excluir categoria."
-      );
-
-    throw new Error(message);
-  }
-
-  return response.json();
 }
