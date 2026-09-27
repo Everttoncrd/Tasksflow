@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 
 import {
   Plus,
@@ -26,13 +27,10 @@ import {
 
 function Dashboard() {
   const navigate = useNavigate();
+  const { user } = useAuth();
 
-  // =========================================================
-  // USUÁRIO
-  // =========================================================
-
-  const [userName, setUserName] =
-    useState("Everton");
+  // Nome do usuário autenticado (somente o primeiro nome)
+  const userName = user?.name?.trim()?.split(/\s+/)[0] || "Usuário";
 
   // =========================================================
   // TAREFAS
@@ -151,21 +149,6 @@ function Dashboard() {
         JSON.parse(
           storedSettings
         );
-
-      // NOME
-
-      if (
-        settings.name &&
-        settings.name.trim()
-      ) {
-        setUserName(
-          settings.name.trim()
-        );
-      } else {
-        setUserName(
-          "Everton"
-        );
-      }
 
       // PREFERÊNCIAS
 
