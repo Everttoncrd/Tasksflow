@@ -9,6 +9,11 @@ import {
   Routes,
 } from "react-router-dom";
 
+import {
+  CheckCircle2,
+  Menu,
+} from "lucide-react";
+
 import Sidebar
   from "./components/Sidebar";
 
@@ -46,13 +51,107 @@ import "./App.css";
 function PrivateLayout({
   theme,
 }) {
+  const [
+    mobileMenuOpen,
+    setMobileMenuOpen,
+  ] = useState(false);
+
+
+  function openMobileMenu() {
+    setMobileMenuOpen(true);
+  }
+
+
+  function closeMobileMenu() {
+    setMobileMenuOpen(false);
+  }
+
+
+  useEffect(() => {
+    function handleEscape(event) {
+      if (
+        event.key === "Escape"
+      ) {
+        closeMobileMenu();
+      }
+    }
+
+    window.addEventListener(
+      "keydown",
+      handleEscape
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleEscape
+      );
+    };
+  }, []);
+
+
+  useEffect(() => {
+    if (mobileMenuOpen) {
+      document.body.classList.add(
+        "mobile-menu-active"
+      );
+    } else {
+      document.body.classList.remove(
+        "mobile-menu-active"
+      );
+    }
+
+    return () => {
+      document.body.classList.remove(
+        "mobile-menu-active"
+      );
+    };
+  }, [mobileMenuOpen]);
+
+
   return (
     <div
       className="app-layout"
       data-theme={theme}
     >
 
-      <Sidebar />
+      <header className="mobile-header">
+
+        <div className="mobile-brand">
+
+          <div className="mobile-brand-icon">
+            <CheckCircle2
+              size={21}
+            />
+          </div>
+
+          <span>
+            TaskFlow
+          </span>
+
+        </div>
+
+
+        <button
+          type="button"
+          className="mobile-menu-button"
+          onClick={openMobileMenu}
+          aria-label="Abrir menu"
+          aria-expanded={
+            mobileMenuOpen
+          }
+        >
+          <Menu size={25} />
+        </button>
+
+      </header>
+
+
+      <Sidebar
+        isOpen={mobileMenuOpen}
+        onClose={closeMobileMenu}
+      />
+
 
       <main className="main-content">
 
@@ -180,16 +279,19 @@ function AppContent() {
       getSavedTheme()
     );
 
+
     function handleSettingsChanged() {
       applyTheme(
         getSavedTheme()
       );
     }
 
+
     const systemTheme =
       window.matchMedia(
         "(prefers-color-scheme: dark)"
       );
+
 
     function handleSystemThemeChange() {
       if (
@@ -202,15 +304,18 @@ function AppContent() {
       }
     }
 
+
     window.addEventListener(
       "taskflow-settings-changed",
       handleSettingsChanged
     );
 
+
     systemTheme.addEventListener(
       "change",
       handleSystemThemeChange
     );
+
 
     return () => {
       window.removeEventListener(
@@ -243,6 +348,7 @@ function AppContent() {
         }
       />
 
+
       <Route
         element={
           <ProtectedRoute />
@@ -272,5 +378,6 @@ function App() {
     </AuthProvider>
   );
 }
+
 
 export default App;

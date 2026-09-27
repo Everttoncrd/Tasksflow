@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   LogOut,
   UserRound,
+  X,
 } from "lucide-react";
 
 import {
@@ -19,7 +20,10 @@ import {
 } from "../context/AuthContext";
 
 
-function Sidebar() {
+function Sidebar({
+  isOpen = false,
+  onClose = () => {},
+}) {
   const {
     user,
     logout,
@@ -33,6 +37,8 @@ function Sidebar() {
     try {
       await logout();
     } finally {
+      onClose();
+
       navigate(
         "/login",
         {
@@ -40,6 +46,11 @@ function Sidebar() {
         }
       );
     }
+  }
+
+
+  function handleNavigation() {
+    onClose();
   }
 
 
@@ -53,138 +64,195 @@ function Sidebar() {
 
 
   return (
-    <aside className="sidebar">
+    <>
+      <div
+        className={
+          `sidebar-overlay ${
+            isOpen
+              ? "show"
+              : ""
+          }`
+        }
+        onClick={onClose}
+        aria-hidden="true"
+      />
 
-      <div className="logo">
 
-        <div className="logo-icon">
-          <CheckCircle2
-            size={23}
-          />
+      <aside
+        className={
+          `sidebar ${
+            isOpen
+              ? "sidebar-open"
+              : ""
+          }`
+        }
+      >
+
+        <div className="sidebar-mobile-top">
+
+          <div className="logo sidebar-mobile-logo">
+
+            <div className="logo-icon">
+              <CheckCircle2
+                size={23}
+              />
+            </div>
+
+            <span>
+              TaskFlow
+            </span>
+
+          </div>
+
+
+          <button
+            type="button"
+            className="sidebar-close-button"
+            onClick={onClose}
+            aria-label="Fechar menu"
+          >
+            <X size={23} />
+          </button>
+
         </div>
 
-        <span>
-          TaskFlow
-        </span>
 
-      </div>
+        <div className="logo sidebar-desktop-logo">
 
-
-      <nav className="sidebar-menu">
-
-        <NavLink
-          to="/"
-          end
-          className={linkClass}
-        >
-          <LayoutDashboard
-            size={20}
-          />
+          <div className="logo-icon">
+            <CheckCircle2
+              size={23}
+            />
+          </div>
 
           <span>
-            Dashboard
+            TaskFlow
           </span>
-        </NavLink>
 
-
-        <NavLink
-          to="/tasks"
-          className={linkClass}
-        >
-          <ListTodo
-            size={20}
-          />
-
-          <span>
-            Minhas tarefas
-          </span>
-        </NavLink>
-
-
-        <NavLink
-          to="/calendar"
-          className={linkClass}
-        >
-          <CalendarDays
-            size={20}
-          />
-
-          <span>
-            Calendário
-          </span>
-        </NavLink>
-
-
-        <NavLink
-          to="/categories"
-          className={linkClass}
-        >
-          <Tags
-            size={20}
-          />
-
-          <span>
-            Categorias
-          </span>
-        </NavLink>
-
-      </nav>
-
-
-      <div className="sidebar-account">
-
-        <UserRound
-          size={18}
-        />
-
-        <div>
-          <strong>
-            {user?.name}
-          </strong>
-
-          <span>
-            {user?.email}
-          </span>
         </div>
 
-      </div>
+
+        <nav className="sidebar-menu">
+
+          <NavLink
+            to="/"
+            end
+            className={linkClass}
+            onClick={handleNavigation}
+          >
+            <LayoutDashboard
+              size={20}
+            />
+
+            <span>
+              Dashboard
+            </span>
+          </NavLink>
 
 
-      <div className="Sidebar-bottom">
+          <NavLink
+            to="/tasks"
+            className={linkClass}
+            onClick={handleNavigation}
+          >
+            <ListTodo
+              size={20}
+            />
 
-        <NavLink
-          to="/settings"
-          className={linkClass}
-        >
-          <Settings
-            size={20}
+            <span>
+              Minhas tarefas
+            </span>
+          </NavLink>
+
+
+          <NavLink
+            to="/calendar"
+            className={linkClass}
+            onClick={handleNavigation}
+          >
+            <CalendarDays
+              size={20}
+            />
+
+            <span>
+              Calendário
+            </span>
+          </NavLink>
+
+
+          <NavLink
+            to="/categories"
+            className={linkClass}
+            onClick={handleNavigation}
+          >
+            <Tags
+              size={20}
+            />
+
+            <span>
+              Categorias
+            </span>
+          </NavLink>
+
+        </nav>
+
+
+        <div className="sidebar-account">
+
+          <UserRound
+            size={18}
           />
 
-          <span>
-            Configurações
-          </span>
-        </NavLink>
+          <div>
+            <strong>
+              {user?.name}
+            </strong>
+
+            <span>
+              {user?.email}
+            </span>
+          </div>
+
+        </div>
 
 
-        <button
-          type="button"
-          className="sidebar-link sidebar-logout"
-          onClick={
-            handleLogout
-          }
-        >
-          <LogOut
-            size={20}
-          />
+        <div className="sidebar-bottom">
 
-          <span>
-            Sair
-          </span>
-        </button>
+          <NavLink
+            to="/settings"
+            className={linkClass}
+            onClick={handleNavigation}
+          >
+            <Settings
+              size={20}
+            />
 
-      </div>
+            <span>
+              Configurações
+            </span>
+          </NavLink>
 
-    </aside>
+
+          <button
+            type="button"
+            className="sidebar-link sidebar-logout"
+            onClick={
+              handleLogout
+            }
+          >
+            <LogOut
+              size={20}
+            />
+
+            <span>
+              Sair
+            </span>
+          </button>
+
+        </div>
+
+      </aside>
+    </>
   );
 }
 
