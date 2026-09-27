@@ -40,6 +40,29 @@ from database import (
 app = Flask(__name__)
 
 
+# =========================================================
+# COMPATIBILIDADE COM /api NA VERCEL
+# =========================================================
+
+class StripApiPrefix:
+    def __init__(self, application):
+        self.application = application
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+
+        if path == "/api":
+            environ["PATH_INFO"] = "/"
+
+        elif path.startswith("/api/"):
+            environ["PATH_INFO"] = path[4:]
+
+        return self.application(environ, start_response)
+
+
+app.wsgi_app = StripApiPrefix(app.wsgi_app)
+
+
 IS_PRODUCTION = (
     os.getenv(
         "FLASK_ENV",
@@ -925,7 +948,6 @@ def login():
 
     finally:
         conn.close()
-
 
 # =========================================================
 # USUÁRIO ATUAL
@@ -2165,4 +2187,4 @@ if __name__ == "__main__":
         host="127.0.0.1",
         port=5000,
         debug=not IS_PRODUCTION,
-    )
+    )        
