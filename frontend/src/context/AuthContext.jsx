@@ -21,12 +21,24 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     async function restoreSession() {
-      try {
-        const data =
-          await getCurrentUser();
+      // A sessão só é restaurada se o login/cadastro aconteceu
+      // nesta mesma aba. Assim, quem abre o link público do
+      // portfólio não entra automaticamente em uma conta que
+      // tenha ficado autenticada anteriormente no navegador.
+      const authenticatedInThisTab =
+        sessionStorage.getItem("taskflow-authenticated") === "true";
 
+      if (!authenticatedInThisTab) {
+        setUser(null);
+        setLoadingAuth(false);
+        return;
+      }
+
+      try {
+        const data = await getCurrentUser();
         setUser(data.user);
       } catch {
+        sessionStorage.removeItem("taskflow-authenticated");
         setUser(null);
       } finally {
         setLoadingAuth(false);
@@ -45,6 +57,7 @@ export function AuthProvider({ children }) {
       password,
     });
 
+    sessionStorage.setItem("taskflow-authenticated", "true");
     setUser(data.user);
 
     return data.user;
@@ -61,6 +74,7 @@ export function AuthProvider({ children }) {
       password,
     });
 
+    sessionStorage.setItem("taskflow-authenticated", "true");
     setUser(data.user);
 
     return data.user;
@@ -70,6 +84,7 @@ export function AuthProvider({ children }) {
     try {
       await logoutUser();
     } finally {
+      sessionStorage.removeItem("taskflow-authenticated");
       setUser(null);
     }
   }
