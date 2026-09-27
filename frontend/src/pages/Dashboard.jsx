@@ -27,10 +27,16 @@ import {
 
 function Dashboard() {
   const navigate = useNavigate();
+
+  // =========================================================
+  // USUÁRIO AUTENTICADO
+  // =========================================================
+
   const { user } = useAuth();
 
-  // Nome do usuário autenticado (somente o primeiro nome)
-  const userName = user?.name?.trim()?.split(/\s+/)[0] || "Usuário";
+  const userName =
+    user?.name?.trim()?.split(/\s+/)[0] ||
+    "Usuário";
 
   // =========================================================
   // TAREFAS
