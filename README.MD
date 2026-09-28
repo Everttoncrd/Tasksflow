@@ -22,20 +22,19 @@ O projeto foi desenvolvido com **React no frontend, Flask no backend e PostgreSQ
 
 ## 📸 Screenshots
 
-### 📊 Dashboard
-Visão geral das tarefas, prioridades, status e produtividade.
+### 📱 Interface Responsiva
 
-![Dashboard do TaskFlow](frontend/src/assets/dashboard.png)
+O TaskFlow possui uma interface responsiva, adaptada para diferentes tamanhos de tela e dispositivos móveis.
 
-### ✅ Gerenciamento de Tarefas
-Criação, edição, organização e acompanhamento das tarefas.
+<p align="center">
+  <img src="frontend/src/assets/dashboard.png" width="250" alt="Dashboard mobile">
+  <img src="frontend/src/assets/tarefas.png" width="250" alt="Tarefas mobile">
+  <img src="frontend/src/assets/calendario.png" width="250" alt="Calendário mobile">
+</p>
 
-![Tela de Tarefas do TaskFlow](frontend/src/assets/Tarefas.png)
-
-### 📅 Calendário
-Visualização das tarefas e seus respectivos prazos através do calendário.
-
-![Calendário do TaskFlow](frontend/src/assets/Calendário.png)
+<p align="center">
+  Dashboard • Tarefas • Calendário
+</p>
 Exemplo:
 
 ![Dashboard](docs/dashboard.png)
