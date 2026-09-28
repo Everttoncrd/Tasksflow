@@ -28,8 +28,8 @@ O TaskFlow possui uma interface responsiva, adaptada para diferentes tamanhos de
 
 <p align="center">
   <img src="frontend/src/assets/dashboard.png" width="250" alt="Dashboard mobile">
-  <img src="frontend/src/assets/tarefas.png" width="250" alt="Tarefas mobile">
-  <img src="frontend/src/assets/calendario.png" width="250" alt="Calendário mobile">
+  <img src="frontend/src/assets/Tarefas.png" width="250" alt="Tarefas mobile">
+  <img src="frontend/src/assets/Calendário.png" width="250" alt="Calendário mobile">
 </p>
 
 <p align="center">
