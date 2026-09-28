@@ -10,7 +10,7 @@ O projeto foi desenvolvido com **React no frontend, Flask no backend e PostgreSQ
 
 ## 🚀 Demonstração
 
-🔗 **Aplicação:** [Acessar TaskFlow](Chttps://tasksflow-sigma.vercel.app/)
+🔗 **Aplicação:** [Acessar TaskFlow](https://tasksflow-sigma.vercel.app/)
 
 🔗 **Repositório:** [GitHub](https://github.com/Everttoncrd/Tasksflow)
 
