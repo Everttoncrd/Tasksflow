@@ -18,7 +18,21 @@ O projeto foi desenvolvido com **React no frontend, Flask no backend e PostgreSQ
 
 ## 📸 Preview
 
-> Screenshots da aplicação serão adicionados aqui.
+> ## 📸 Screenshots
+
+### Dashboard
+![Dashboard do TaskFlow](assets/dashboard.png)
+
+### Tarefas
+![Gerenciamento de tarefas](assets/tasks.png)
+
+### Login
+![Login do TaskFlow](assets/login.png)
+
+### Responsividade
+![TaskFlow no celular](assets/mobile.png) 
+
+Screenshots da aplicação serão adicionados aqui.
 
 <!--
 Exemplo:
