@@ -21,7 +21,7 @@ O projeto foi desenvolvido com **React no frontend, Flask no backend e PostgreSQ
 > ## 📸 Screenshots
 
 ### Dashboard
-![Dashboard do TaskFlow](assets/dashboard.png)
+![Dashboard do TaskFlow](Tasksflow/frontend/SRC/assets/dashboard.png)
 
 ### Tarefas
 ![Gerenciamento de tarefas](assets/tasks.png)
